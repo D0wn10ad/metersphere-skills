@@ -163,6 +163,75 @@ cp -R ./skills ~/.openclaw/workspace/skills/metersphere
 
 ```
 
+### 5.4 多 Agent 安装（npx skills）
+
+本技能同样可以通过 [vercel-labs/skills](https://github.com/vercel-labs/skills) CLI 分发和安装到多种 AI Agent 工具。下文中 `<owner>` 指本仓库的 GitHub 拥有者（组织或个人）。
+
+#### 预览可安装的技能（不实际安装）
+
+```bash
+npx skills add <owner>/metersphere-skills --list
+```
+
+#### 安装到 OpenCode（全局）
+
+```bash
+npx skills add <owner>/metersphere-skills -s metersphere -a opencode -g
+```
+
+#### 安装到所有已检测到的 Agent
+
+```bash
+npx skills add <owner>/metersphere-skills --all
+```
+
+#### 不安装直接使用（试用）
+
+> **注意**：当前 `npx skills use` 仅支持 claude-code、codex、sarvam-code 等部分 Agent，暂不支持 opencode。
+
+```bash
+npx skills use <owner>/metersphere-skills --skill metersphere --agent opencode
+```
+
+#### 卸载
+
+```bash
+npx skills remove metersphere --agent opencode -g
+```
+
+#### 本地路径安装
+
+除 GitHub 仓库地址外，也可直接指定本地路径：
+
+```bash
+npx skills add /path/to/metersphere-skills -s metersphere -a opencode -g
+```
+
+#### 关闭 CLI 遥测
+
+如需关闭 `npx skills` 的遥测上报，可在执行前设置环境变量：
+
+```bash
+DISABLE_TELEMETRY=1 npx skills add <owner>/metersphere-skills --all
+# 或
+DO_NOT_TRACK=1 npx skills add <owner>/metersphere-skills --all
+```
+
+#### 环境变量（.env）
+
+安装后需在技能目录创建 `.env` 并填写环境变量（模板已随技能包附送为 `skills/.env.example`）：
+
+```bash
+# npx skills 安装（OpenCode 等）
+cp ~/.agents/skills/metersphere/.env.example ~/.agents/skills/metersphere/.env
+# OpenClaw 安装
+cp ~/.openclaw/workspace/skills/metersphere/.env.example ~/.openclaw/workspace/skills/metersphere/.env
+```
+
+脚本会从技能目录自动加载 `.env`（`ms.sh`/`ms.py` 均按 `SKILL_DIR/.env` 解析）。
+
+> 技能也可通过 `./install.sh` 安装到 OpenClaw（见上方 5.3）。
+
 ---
 
 ## 6. 环境配置
