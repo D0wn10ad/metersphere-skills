@@ -19,6 +19,10 @@ security:
 
 优先用本 skill 自带脚本,不要临时手写 curl。
 
+> **执行前提**:下文所有 `./scripts/ms.sh` 均为相对本技能目录的相对路径。执行前必须先进入技能安装目录(或改用绝对路径):
+> - npx skills 安装(OpenCode 等): `cd ~/.agents/skills/metersphere`
+> - OpenClaw 安装: `cd ~/.openclaw/workspace/skills/metersphere`
+
 ## 选择工作流
 
 按任务类型选最短路径:
