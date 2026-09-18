@@ -2,16 +2,14 @@
 > 给 AI 编码代理（OpenCode 等）的仓库指引。命令与约定均基于仓库现状核对。
 
 ## 这是什么
-metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地 bash/Python 脚本封装 MeterSphere REST API，让代理能查询/生成/批量写入功能用例、接口定义、接口用例等测试资产。安装目标包括 OpenClaw（./install.sh）以及任意支持 Agent Skills 的工具（npx skills add）。
+metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地 bash/Python 脚本封装 MeterSphere REST API，让代理能查询/生成/批量写入功能用例、接口定义、接口用例等测试资产。安装目标包括 OpenCode、OpenClaw、Claude Code、Codex、Cursor 等任意支持 Agent Skills 的工具（npx skills add）。
 
 ## 目录结构
 - README.md — 完整命令参考（zh-CN）
-- install.sh — OpenClaw 安装脚本：复制 skills/ → ~/.openclaw/workspace/skills/metersphere/
-- .env.example — 环境变量模板（仓库根）
 - .gitignore — 忽略 *.env、.token_cache、.idea/
 - skills/ — Skill 本体
   - SKILL.md — 代理技能说明书（frontmatter: name=metersphere、environment.required、security 标志）
-  - skill-metadata.json — clawdhub 分发元数据（name/version/requiredEnvVars/requiredBinaries）
+  - skill-metadata.json — Skill 元数据（name/version/requiredEnvVars/requiredBinaries；npx skills 不读取）
   - references/ — ms-api.md（API 端点参考）+ ai-*-prompt.md（AI 增强提示模板）
   - scripts/ — ms.sh + ms.py + ms_*.py（见下）
 
