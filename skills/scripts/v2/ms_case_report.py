@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib import request, error
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
+SKILL_DIR = SCRIPT_DIR.parent.parent
 ENV_FILE = SKILL_DIR / '.env'
 
 if ENV_FILE.exists():

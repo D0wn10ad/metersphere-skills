@@ -2,7 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SKILL_DIR="$(dirname "$SCRIPT_DIR")"
+# v2 脚本位于 scripts/v2/，比主包深一层：技能根目录（.env 所在）为上两级。
+SKILL_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 ENV_FILE="${SKILL_DIR}/.env"
 
 if [[ -f "$ENV_FILE" ]]; then
