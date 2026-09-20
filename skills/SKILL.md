@@ -389,3 +389,13 @@ v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅�
 ### 6. 写入安全
 
 `functional-case batch-create` / `generate-create` / `delete` / 通用 `create` / `attachment upload` 等写入操作要求显式设置 `METERSPHERE_PROJECT_ID` 环境变量；未设置时脚本拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
+
+### 7. 报告命令（reviewed-summary / case-report）
+
+```bash
+./scripts/v2/ms.sh reviewed-summary <projectId> [keyword]
+./scripts/v2/ms.sh case-report <projectId> <caseId>
+./scripts/v2/ms.sh case-report-md <projectId> <caseId>
+```
+
+- 与主包同名命令语义一致，但走 v2 路径；`case-report-md` 输出面向用户的 Markdown 报告（摘要/前置条件/备注/步骤/缺陷/评审记录）。

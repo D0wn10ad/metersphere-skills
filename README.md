@@ -385,6 +385,16 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - **查看控制（诚实说明）**：v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅受项目级权限约束（能否查看用例由用例所属项目的 ACL 决定，而非评论 / 附件本身）。任何能查看该用例的人都能看到其全部评论与附件；`type` / `belongId` 只是内容过滤条件，不是可见性控制。
 - **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / 通用 `create` / `attachment upload` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
 
+#### 报告命令（reviewed-summary / case-report）
+
+```bash
+./scripts/v2/ms.sh reviewed-summary <projectId> [keyword]
+./scripts/v2/ms.sh case-report <projectId> <caseId>
+./scripts/v2/ms.sh case-report-md <projectId> <caseId>
+```
+
+- 与主包同名命令（§8.5）语义一致，但走 v2 路径；`case-report-md` 输出面向用户的 Markdown 报告（摘要/前置条件/备注/步骤/缺陷/评审记录）。
+
 ---
 
 ## 9. 典型使用场景
