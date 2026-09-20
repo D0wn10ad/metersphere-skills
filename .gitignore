@@ -1,3 +1,4 @@
 *.env
 .token_cache
 .idea/
+.omo/
