@@ -390,6 +390,19 @@ cd ~/.agents/skills/metersphere
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
 - 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`。
 
+#### API 定义 → 接口用例（case factory）
+
+```bash
+./scripts/v2/ms.sh api-case generate-create <projectId> [<definitionId>...]
+```
+
+- 为**已存在**的 API 定义批量生成带断言的接口用例（每端点 3 个变体：`*成功场景`（断言 200，P1）/ `*必填缺失`（首个必填 query/rest 参数置空，断言 400，P1，仅当存在必填参数）/ `*边界场景`（首个字符串参数 = 128 个 'x'，断言 200，P2，仅当存在字符串参数）），填补 v2 导入只建定义不建用例（`caseTotal='0'`）的缺口。
+- 不传 definitionId = 项目内全部 HTTP 定义（自动分页拉取）；变体生成由 `skills/scripts/v2/ms_generate_case.py` 完成（纯本地，无网络）。
+- **服务端实测要求**（缺一即创建失败）：每条用例必须显式携带 `id`（uuid4，服务端不自动生成）、显式 `priority`、`request` 为嵌套对象（JSON 字符串会被 400 拒绝）——脚本已自动处理。
+- **不创建定义**（定义由导入或插件负责）；不执行用例；不添加 JSONPath 断言（仅状态码断言）。
+- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），当前变体扫描 `query`/`rest`——参数存于 `arguments` 或仅 body 必填的定义只会生成 `*成功场景`（后续版本扩展）。
+- 失败不中断：单条创建失败继续其余，汇总报告；仅当 0 条创建成功时退出非零。
+
 #### AI 对话记录（chat-history flow）
 
 ```bash
@@ -404,7 +417,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 #### 查看控制与写入安全
 
 - **查看控制（诚实说明）**：v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅受项目级权限约束（能否查看用例由用例所属项目的 ACL 决定，而非评论 / 附件本身）。任何能查看该用例的人都能看到其全部评论与附件；`type` / `belongId` 只是内容过滤条件，不是可见性控制。
-- **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / 通用 `create` / `attachment upload` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
+- **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / `api-case generate-create` / 通用 `create` / `attachment upload` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
 
 #### 报告命令（reviewed-summary / case-report）
 
