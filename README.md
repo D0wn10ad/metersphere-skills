@@ -108,7 +108,9 @@ metersphere-skills/
     ├── references/
     │   ├── ms-api.md
     │   ├── ai-functional-case-prompt.md
-    │   └── ai-api-bundle-prompt.md
+    │   ├── ai-api-bundle-prompt.md
+    │   ├── ai-v2-functional-case-prompt.md
+    │   └── ai-v2-api-case-prompt.md
     └── scripts/
         ├── ms.sh
         ├── ms.py
@@ -119,8 +121,11 @@ metersphere-skills/
         ├── ms_case_report_md.py
         └── v2/
             ├── ms.sh
+            ├── ms_generate.py
+            ├── ms_chat_log.py
             ├── ms_case_report.py
-            └── ms_review_summary.py
+            ├── ms_review_summary.py
+            └── ms_case_report_md.py
 ```
 
 ### 目录说明
@@ -136,7 +141,7 @@ metersphere-skills/
 - `skills/scripts/ms_review_summary.py`：用例评审汇总脚本
 - `skills/scripts/ms_case_report.py`：单用例结构化报告
 - `skills/scripts/ms_case_report_md.py`：单用例 Markdown 报告
-- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_case_report.py / ms_review_summary.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
+- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_generate.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
 
 ---
 
@@ -528,6 +533,10 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - 单用例详情 + 缺陷 + 评审记录聚合
 - 功能用例草稿生成与批量写入
 - OpenAPI 导入草稿生成与批量写入
+- 用例评论（comment）与附件（attachment）管理（v2）
+- AI 对话记录格式化并挂载为用例附件（v2）
+- 功能用例删除（v2，含写入安全守卫）
+- API 路径按版本/部署覆盖（`METERSPHERE_*_PATH`，ms.sh / ms.py / 报告脚本均支持）
 
 当前项目定位仍以：
 
@@ -547,6 +556,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - `skills/references/ms-api.md`
 - `skills/references/ai-functional-case-prompt.md`
 - `skills/references/ai-api-bundle-prompt.md`
+- `skills/references/ai-v2-functional-case-prompt.md`
+- `skills/references/ai-v2-api-case-prompt.md`
 
 ---
 
