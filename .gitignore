@@ -2,3 +2,4 @@
 .token_cache
 .idea/
 .omo/
+__pycache__/
