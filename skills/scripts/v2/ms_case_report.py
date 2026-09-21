@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib import request, error
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-SKILL_DIR = SCRIPT_DIR.parent
+SKILL_DIR = SCRIPT_DIR.parent.parent
 ENV_FILE = SKILL_DIR / '.env'
 
 if ENV_FILE.exists():
@@ -22,6 +22,22 @@ if ENV_FILE.exists():
 BASE_URL = os.environ.get('METERSPHERE_BASE_URL', '').rstrip('/')
 ACCESS_KEY = os.environ.get('METERSPHERE_ACCESS_KEY') or os.environ.get('METERSPHERE_ACCESS_KEY', '')
 SECRET_KEY = os.environ.get('METERSPHERE_SECRET_KEY') or os.environ.get('METERSPHERE_SECRET_KEY', '')
+
+CASE_DETAIL_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_CASE_GET_PATH') or '/test/case/get/{id}'
+CASE_REVIEW_PAGE_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_CASE_REVIEW_LIST_PATH') or '/test/review/case/list/{goPage}/{pageSize}'
+CASE_ISSUES_BY_CASE_PATH = os.environ.get('METERSPHERE_CASE_ISSUES_BY_CASE_PATH') or '/issues/get/case/FUNCTIONAL/{id}'
+
+
+def fill_path(template: str, case_id: str = '', go_page: int = 1, page_size: int = 100) -> str:
+    return (template
+            .replace('{id}', case_id)
+            .replace('{goPage}', str(go_page))
+            .replace('{pageSize}', str(page_size)))
+
+
+def api_path(path: str) -> str:
+    # Same contract as ms.sh service_prefix: path without gateway prefix; /track prepended here.
+    return path if path.startswith('/track') else '/track' + path
 
 
 def die(msg: str):
@@ -68,11 +84,11 @@ def get_json(path: str):
 
 
 def case_detail(case_id: str):
-    return (get_json(f'/track/test/case/get/{case_id}').get('data') or {})
+    return (get_json(api_path(fill_path(CASE_DETAIL_PATH, case_id))).get('data') or {})
 
 
 def case_reviews(case_id: str):
-    data = post_json('/track/test/review/case/list/1/100', {'caseId': case_id}).get('data') or {}
+    data = post_json(api_path(fill_path(CASE_REVIEW_PAGE_PATH)), {'caseId': case_id}).get('data') or {}
     return data.get('listObject') or []
 
 
@@ -98,7 +114,7 @@ def case_bugs(project_id: str, case_id: str):
     # v2.10 "用例关联 issue" 端点是 GET /issues/get/case/{refType}/{id}
     # (getIssuesByCaseId, test_case_issues join, refType=FUNCTIONAL)；data 为列表非包络。
     # 勿用 POST /test/case/issues/list——语义相反（按 issue 查用例，必填 issuesId，否则 500）。
-    data = get_json(f'/track/issues/get/case/FUNCTIONAL/{case_id}').get('data') or []
+    data = get_json(api_path(fill_path(CASE_ISSUES_BY_CASE_PATH, case_id))).get('data') or []
     if isinstance(data, list):
         lists.extend(data)
     else:

@@ -108,7 +108,9 @@ metersphere-skills/
     ├── references/
     │   ├── ms-api.md
     │   ├── ai-functional-case-prompt.md
-    │   └── ai-api-bundle-prompt.md
+    │   ├── ai-api-bundle-prompt.md
+    │   ├── ai-v2-functional-case-prompt.md
+    │   └── ai-v2-api-case-prompt.md
     └── scripts/
         ├── ms.sh
         ├── ms.py
@@ -119,8 +121,11 @@ metersphere-skills/
         ├── ms_case_report_md.py
         └── v2/
             ├── ms.sh
+            ├── ms_generate.py
+            ├── ms_chat_log.py
             ├── ms_case_report.py
-            └── ms_review_summary.py
+            ├── ms_review_summary.py
+            └── ms_case_report_md.py
 ```
 
 ### 目录说明
@@ -136,7 +141,7 @@ metersphere-skills/
 - `skills/scripts/ms_review_summary.py`：用例评审汇总脚本
 - `skills/scripts/ms_case_report.py`：单用例结构化报告
 - `skills/scripts/ms_case_report_md.py`：单用例 Markdown 报告
-- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_case_report.py / ms_review_summary.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
+- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_generate.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
 
 ---
 
@@ -193,6 +198,22 @@ DISABLE_TELEMETRY=1 npx skills add <owner>/metersphere-skills --all
 # 或
 DO_NOT_TRACK=1 npx skills add <owner>/metersphere-skills --all
 ```
+
+### 5.8 更新已安装的技能
+
+`npx skills add` 会**完整递归复制**技能目录（含 `scripts/`、`references/` 及 `scripts/v2/` 子目录；仅排除 `.git`、`__pycache__`、`metadata.json`），无需手动复制文件。但安装是**副本而非实时链接**，仓库更新后需重新安装：
+
+```bash
+npx skills add <owner>/metersphere-skills --all
+```
+
+> **⚠️ 重装前备份 `.env`**：安装器会先清空规范副本目录再复制，技能根目录下的 `.env`（含真实密钥）会被删除。重装前备份、重装后恢复：
+>
+> ```bash
+> cp ~/.agents/skills/metersphere/.env /tmp/env.backup
+> npx skills add <owner>/metersphere-skills --all
+> cp /tmp/env.backup ~/.agents/skills/metersphere/.env
+> ```
 
 ---
 
@@ -385,6 +406,16 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - **查看控制（诚实说明）**：v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅受项目级权限约束（能否查看用例由用例所属项目的 ACL 决定，而非评论 / 附件本身）。任何能查看该用例的人都能看到其全部评论与附件；`type` / `belongId` 只是内容过滤条件，不是可见性控制。
 - **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / 通用 `create` / `attachment upload` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
 
+#### 报告命令（reviewed-summary / case-report）
+
+```bash
+./scripts/v2/ms.sh reviewed-summary <projectId> [keyword]
+./scripts/v2/ms.sh case-report <projectId> <caseId>
+./scripts/v2/ms.sh case-report-md <projectId> <caseId>
+```
+
+- 与主包同名命令（§8.5）语义一致，但走 v2 路径；`case-report-md` 输出面向用户的 Markdown 报告（摘要/前置条件/备注/步骤/缺陷/评审记录）。
+
 ---
 
 ## 9. 典型使用场景
@@ -518,6 +549,10 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - 单用例详情 + 缺陷 + 评审记录聚合
 - 功能用例草稿生成与批量写入
 - OpenAPI 导入草稿生成与批量写入
+- 用例评论（comment）与附件（attachment）管理（v2）
+- AI 对话记录格式化并挂载为用例附件（v2）
+- 功能用例删除（v2，含写入安全守卫）
+- API 路径按版本/部署覆盖（`METERSPHERE_*_PATH`，ms.sh / ms.py / 报告脚本均支持）
 
 当前项目定位仍以：
 
@@ -537,6 +572,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - `skills/references/ms-api.md`
 - `skills/references/ai-functional-case-prompt.md`
 - `skills/references/ai-api-bundle-prompt.md`
+- `skills/references/ai-v2-functional-case-prompt.md`
+- `skills/references/ai-v2-api-case-prompt.md`
 
 ---
 
