@@ -199,6 +199,22 @@ DISABLE_TELEMETRY=1 npx skills add <owner>/metersphere-skills --all
 DO_NOT_TRACK=1 npx skills add <owner>/metersphere-skills --all
 ```
 
+### 5.8 更新已安装的技能
+
+`npx skills add` 会**完整递归复制**技能目录（含 `scripts/`、`references/` 及 `scripts/v2/` 子目录；仅排除 `.git`、`__pycache__`、`metadata.json`），无需手动复制文件。但安装是**副本而非实时链接**，仓库更新后需重新安装：
+
+```bash
+npx skills add <owner>/metersphere-skills --all
+```
+
+> **⚠️ 重装前备份 `.env`**：安装器会先清空规范副本目录再复制，技能根目录下的 `.env`（含真实密钥）会被删除。重装前备份、重装后恢复：
+>
+> ```bash
+> cp ~/.agents/skills/metersphere/.env /tmp/env.backup
+> npx skills add <owner>/metersphere-skills --all
+> cp /tmp/env.backup ~/.agents/skills/metersphere/.env
+> ```
+
 ---
 
 ## 6. 环境配置
