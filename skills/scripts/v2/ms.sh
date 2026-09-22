@@ -727,6 +727,76 @@ PY
   echo "$resp"
 }
 
+# definition_ids_by_name: 分页拉取项目持久化定义列表，输出 "id|name|method" 行
+# 参数: project_id
+# 背景: fullCoverage 重复导入按 path 去重不落新行，但导入响应 data.data[] 返回
+#       解析阶段新生成、不可查询的 id（GET → data:null）。须按 name 从持久化
+#       列表解析真实 id（详见 references/ms-api.md「接口定义导入幂等语义」）。
+definition_ids_by_name () {
+  local project_id="$1"
+  local page=1 page_size=500
+  local list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+  list_path="${list_path/\{pageSize\}/$page_size}"
+  local body
+  body="$(python3 - "$project_id" "$METERSPHERE_PROTOCOLS_JSON" <<'PY'
+import json, sys
+project_id, protocols_json = sys.argv[1], sys.argv[2]
+try:
+    protocols = json.loads(protocols_json)
+except Exception:
+    protocols = ["HTTP"]
+print(json.dumps({"projectId": project_id, "protocols": protocols}, ensure_ascii=False))
+PY
+)"
+  while :; do
+    local resp
+    resp="$(request POST "$list_path" "$body" "api")" || return 1
+    printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+data = d.get("data") or {}
+items = data.get("listObject") or []
+for it in items:
+    if isinstance(it, dict) and it.get("id"):
+        print("%s|%s|%s" % (it["id"], it.get("name") or "", it.get("method") or ""))
+' || return 1
+    local page_count got
+    page_count="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+pc = data.get("pageCount")
+print(pc if isinstance(pc, int) else "")
+')"
+    got="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+print(len(data.get("listObject") or []))
+')"
+    if [[ -n "$page_count" ]] && (( page >= page_count )); then
+      break
+    fi
+    # 无 pageCount 时：本页行数 < page_size 即末页（与 generate_create_api_cases 一致）
+    if [[ -z "$page_count" ]] && (( got < page_size )); then
+      break
+    fi
+    page=$((page + 1))
+    list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+    list_path="${list_path/\{pageSize\}/$page_size}"
+  done
+  return 0
+}
+
 # import-generate: 只导入定义 + 生成用例计划（不写入用例）
 # 参数: project_id spec_source module_id(可空)
 import_generate () {
@@ -739,27 +809,60 @@ import_generate () {
   resp="$(import_definitions "$project_id" "$spec_path" "$module_id")"
   # 解析 data.data -> [{id,name}]
   defs_json="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps((d.get("data") or {}).get("data", []), ensure_ascii=False))')"
-  local tmp_dir def_ids def_id detail_file variants_file variants
+  local tmp_dir def_lines def_id def_name def_method resolved_def_id name_map detail_file variants_file variants
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
-  def_ids="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join(str(x["id"]) for x in json.load(sys.stdin)))')"
+  def_lines="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join("%s|%s|%s" % (x.get("id",""), x.get("name") or "", x.get("method") or "") for x in json.load(sys.stdin)))')"
   echo '{"definitions":' > "$tmp_dir/out.json"
   printf '%s' "$defs_json" >> "$tmp_dir/out.json"
   echo ',"cases_plan":[' >> "$tmp_dir/out.json"
+  # 拉取持久化定义列表（一次/运行，dry-run 容错）：重复导入时响应 id 可能未持久化
+  name_map="$(definition_ids_by_name "$project_id")" || true
   local first=1
-  while IFS= read -r def_id; do
-    [[ -n "$def_id" ]] || continue
-    detail_file="$tmp_dir/detail_${def_id}.json"
-    request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$def_id")" "" "api" > "$detail_file" || true
-    variants_file="$tmp_dir/variants_${def_id}.json"
+  while IFS= read -r def_line; do
+    [[ -n "$def_line" ]] || continue
+    def_id="${def_line%%|*}"
+    local rest="${def_line#*|}"
+    def_name="${rest%|*}"
+    def_method="${rest##*|}"
+    resolved_def_id="$def_id"
+    if [[ -n "$def_name" && -n "$name_map" ]]; then
+      resolved_def_id="$(python3 -c '
+import sys
+name_map, def_name, def_method, resp_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+rows = [l.split("|", 2) for l in name_map.splitlines() if l.strip()]
+cands = [r for r in rows if len(r) >= 2 and r[1] == def_name]
+if len(cands) == 1:
+    print(cands[0][0])
+elif len(cands) > 1:
+    pick = cands[0][0]
+    if def_method:
+        m = [r for r in cands if len(r) >= 3 and r[2] == def_method]
+        if len(m) == 1:
+            pick = m[0][0]
+    print("WARN|" + pick)
+else:
+    print(resp_id)
+' "$name_map" "$def_name" "$def_method" "$def_id")" || resolved_def_id="$def_id"
+      if [[ "$resolved_def_id" == "WARN|"* ]]; then
+        echo "警告: 同名定义多个，取首个（${resolved_def_id#WARN|}）" >&2
+        resolved_def_id="${resolved_def_id#WARN|}"
+      fi
+    fi
+    detail_file="$tmp_dir/detail_${resolved_def_id}.json"
+    if ! request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$resolved_def_id")" "" "api" > "$detail_file"; then
+      echo "定义 $def_name：导入响应 id $def_id 未持久化（解析 id $resolved_def_id，GET data:null），跳过" >&2
+      continue
+    fi
+    variants_file="$tmp_dir/variants_${resolved_def_id}.json"
     if ! python3 "$SCRIPT_DIR/ms_generate_case.py" "$detail_file" > "$variants_file" 2> "$tmp_dir/gen.err"; then
       echo "定义 $def_id 生成用例失败: $(cat "$tmp_dir/gen.err")" >&2
       continue
     fi
     variants="$(python3 -c 'import json,sys; print(",".join('"'"'\"%s\"'"'"' % v["name"] for v in json.load(open(sys.argv[1]))))' "$variants_file")"
     if (( first )); then first=0; else printf ',' >> "$tmp_dir/out.json"; fi
-    printf '{"definitionId":"%s","variants":[%s]}' "$def_id" "$variants" >> "$tmp_dir/out.json"
-  done <<< "$def_ids"
+    printf '{"definitionId":"%s","variants":[%s]}' "$resolved_def_id" "$variants" >> "$tmp_dir/out.json"
+  done <<< "$def_lines"
   echo ']}' >> "$tmp_dir/out.json"
   cat "$tmp_dir/out.json"
   rm -rf "$tmp_dir"
@@ -776,7 +879,7 @@ import_create () {
   local resolved spec_path
   resolved="$(python3 "$SCRIPT_DIR/ms_import_helper.py" resolve "$spec_source")"
   spec_path="${resolved%%|*}"
-  local resp defs_json tmp_dir def_ids def_id existing detail_file variants_file payloads_file
+  local resp defs_json tmp_dir def_lines def_id def_name def_method resolved_def_id existing detail_file variants_file payloads_file
   resp="$(import_definitions "$project_id" "$spec_path" "$module_id")"
   if ! printf '%s' "$resp" | grep -q '"success":true'; then
     die "导入定义失败: $resp"
@@ -784,15 +887,45 @@ import_create () {
   defs_json="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps((d.get("data") or {}).get("data", []), ensure_ascii=False))')"
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
-  def_ids="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join(str(x["id"]) for x in json.load(sys.stdin)))')"
-  local total=0 created=0 skipped=0
-  local headers signature existing_names
+  def_lines="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join("%s|%s|%s" % (x.get("id",""), x.get("name") or "", x.get("method") or "") for x in json.load(sys.stdin)))')"
+  local total=0 created=0 skipped=0 failed=0
+  local headers signature existing_names name_map
   # existing_case_names 需要 {header:value} dict；复用 generate_signature，绝不手写签名
   signature="$(generate_signature)"
   headers="$(python3 -c 'import json,sys; print(json.dumps({"accessKey": sys.argv[1], "signature": sys.argv[2]}))' "$METERSPHERE_ACCESS_KEY" "$signature")"
+  # 拉取持久化定义列表（一次/运行）：重复导入时响应 id 可能未持久化，按 name 解析真实 id
+  name_map="$(definition_ids_by_name "$project_id")" || die "定义列表拉取失败（无法解析持久化 id）"
   local case_name case_id cresp
-  while IFS= read -r def_id; do
-    [[ -n "$def_id" ]] || continue
+  while IFS= read -r def_line; do
+    [[ -n "$def_line" ]] || continue
+    def_id="${def_line%%|*}"
+    local rest="${def_line#*|}"
+    def_name="${rest%|*}"
+    def_method="${rest##*|}"
+    resolved_def_id="$def_id"
+    if [[ -n "$def_name" && -n "$name_map" ]]; then
+      resolved_def_id="$(python3 -c '
+import sys
+name_map, def_name, def_method, resp_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+rows = [l.split("|", 2) for l in name_map.splitlines() if l.strip()]
+cands = [r for r in rows if len(r) >= 2 and r[1] == def_name]
+if len(cands) == 1:
+    print(cands[0][0])
+elif len(cands) > 1:
+    pick = cands[0][0]
+    if def_method:
+        m = [r for r in cands if len(r) >= 3 and r[2] == def_method]
+        if len(m) == 1:
+            pick = m[0][0]
+    print("WARN|" + pick)
+else:
+    print(resp_id)
+' "$name_map" "$def_name" "$def_method" "$def_id")" || resolved_def_id="$def_id"
+      if [[ "$resolved_def_id" == "WARN|"* ]]; then
+        echo "警告: 同名定义多个，取首个（${resolved_def_id#WARN|}）" >&2
+        resolved_def_id="${resolved_def_id#WARN|}"
+      fi
+    fi
     # 去重预检：取该定义下已有用例名集合（ms_import_helper 未暴露 CLI 子命令，经模块导入调用）
     existing="$(python3 -c '
 import sys, json
@@ -800,11 +933,25 @@ sys.path.insert(0, sys.argv[1])
 from ms_import_helper import existing_case_names
 names = existing_case_names(sys.argv[2], sys.argv[3], sys.argv[4], json.loads(sys.argv[5]))
 print("\n".join(sorted(names)))
-' "$SCRIPT_DIR" "$project_id" "$def_id" "$METERSPHERE_BASE_URL" "$headers")" || existing=""
+' "$SCRIPT_DIR" "$project_id" "$resolved_def_id" "$METERSPHERE_BASE_URL" "$headers")" || die "已存在用例预检失败（定义 $def_name / $resolved_def_id）"
     existing_names="|$(printf '%s\n' "$existing" | tr '\n' '|')"
-    detail_file="$tmp_dir/detail_${def_id}.json"
-    request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$def_id")" "" "api" > "$detail_file" || true
-    variants_file="$tmp_dir/variants_${def_id}.json"
+    detail_file="$tmp_dir/detail_${resolved_def_id}.json"
+    if ! request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$resolved_def_id")" "" "api" > "$detail_file"; then
+      echo "定义 $def_name：detail GET 失败（id $resolved_def_id），跳过" >&2
+      failed=$(( failed + 1 ))
+      continue
+    fi
+    if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+data = d.get("data")
+raise SystemExit(0 if isinstance(data, dict) else 1)
+' "$detail_file"; then
+      echo "定义 $def_name：导入响应 id $def_id 未持久化（解析 id $resolved_def_id，GET data:null），跳过" >&2
+      failed=$(( failed + 1 ))
+      continue
+    fi
+    variants_file="$tmp_dir/variants_${resolved_def_id}.json"
     if ! python3 "$SCRIPT_DIR/ms_generate_case.py" "$detail_file" > "$variants_file" 2> "$tmp_dir/gen.err"; then
       echo "定义 $def_id 生成用例失败: $(cat "$tmp_dir/gen.err")" >&2
       continue
@@ -864,8 +1011,12 @@ else:
         echo "用例创建失败: $case_name — $cresp"
       fi
     done < "$payloads_file"
-  done <<< "$def_ids"
-  echo "import-create 完成: 共 $total 个用例，新增 $created 个，跳过 $skipped 个"
+  done <<< "$def_lines"
+  if (( failed > 0 )); then
+    echo "import-create 完成: 共 $total 个用例，新增 $created 个，跳过 $skipped 个，失败 $failed 个（详见上方诊断）"
+  else
+    echo "import-create 完成: 共 $total 个用例，新增 $created 个，跳过 $skipped 个"
+  fi
   rm -rf "$tmp_dir"
   trap - EXIT
   if (( created == 0 && skipped == 0 )); then
