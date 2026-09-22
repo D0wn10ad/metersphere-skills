@@ -58,3 +58,5 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - 不要绕过 ms.sh 手写 curl（签名易错）。
 - 不要假设 ms.py 与 ms.sh 功能等价。
 - 不要不设 METERSPHERE_PROJECT_ID 就执行写入类命令。
+- 不要把接口定义端点改成单份前缀（`/api/definition/...` 会 404；双份 `/api/api/definition/...` 才有效，`request()` 第 4 参传空串仍回退 `api`）。
+- 重复运行 import-create/import-generate 报「缺少 definition request」时，不要直接消费导入响应 id（不可查询）——按 name 从 `/api/api/definition/list` 解析持久化 id（v2 已内置）。

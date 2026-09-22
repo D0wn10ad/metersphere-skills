@@ -577,7 +577,18 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 
 ---
 
-## 13. 参考文件
+## 13. 已知问题与踩坑（现场实测证实）
+
+> 适用于 `api import-generate` / `api import-create`（v2）。详细说明见 `skills/references/ms-api.md` §10。
+
+- **接口定义端点必须双份前缀** `{BASE}/api/api/definition/...`：单份 `{BASE}/api/definition/...` 得 Spring 404（无 `success` 键）——是路径错，不是数据不存在。
+- **重复导入报「缺少 definition request」**：fullCoverage 按 path 去重不落新行，但导入响应 `data.data[]` 返回解析阶段新生成的不可查询 id（GET 得 `data:null`）。v2 `import-create`/`import-generate` 已内置按 name 从定义列表解析持久化 id 的修复——重复运行同一 spec 会干净跳过（EXIT 0），不再失败。
+- **勿消费导入响应内联 request**：`apiDefinitionId` 必须来自持久化 id 的 detail，否则用例归属错误。
+- **spec 端点 name 变更再导入**：会更新既有定义 name（id 不变），旧变体名不匹配 → 生成新变体用例（重跑跳过，幂等成立）。
+
+---
+
+## 14. 参考文件
 
 如需查看更细的接口与提示词说明，请参考：
 
@@ -590,7 +601,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 
 ---
 
-## 14. 总结
+## 15. 总结
 
 如果你希望 Agent 能够在 MeterSphere 中：
 
