@@ -43,6 +43,7 @@ METERSPHERE_PROTOCOLS_JSON="${METERSPHERE_PROTOCOLS_JSON:-[\"HTTP\"]}"
 [[ -n "${METERSPHERE_API_DEFINITION_LIST_PATH:-}" ]] || METERSPHERE_API_DEFINITION_LIST_PATH='/api/definition/list/{goPage}/{pageSize}'
 [[ -n "${METERSPHERE_API_DEFINITION_GET_PATH:-}" ]] || METERSPHERE_API_DEFINITION_GET_PATH='/api/definition/get/{id}'
 [[ -n "${METERSPHERE_API_DEFINITION_CREATE_PATH:-}" ]] || METERSPHERE_API_DEFINITION_CREATE_PATH='/api/definition/create'
+[[ -n "${METERSPHERE_API_DEFINITION_IMPORT_PATH:-}" ]] || METERSPHERE_API_DEFINITION_IMPORT_PATH='/api/definition/import'
 [[ -n "${METERSPHERE_API_CASE_LIST_PATH:-}" ]] || METERSPHERE_API_CASE_LIST_PATH='/api/testcase/list/{goPage}/{pageSize}'
 [[ -n "${METERSPHERE_API_CASE_GET_PATH:-}" ]] || METERSPHERE_API_CASE_GET_PATH='/api/testcase/get-details/{id}'
 [[ -n "${METERSPHERE_API_CASE_CREATE_PATH:-}" ]] || METERSPHERE_API_CASE_CREATE_PATH='/api/testcase/create'
@@ -251,7 +252,7 @@ resource_paths() {
       echo "$METERSPHERE_CASE_REVIEW_USER_OPTION_PATH||"
       ;;
     api)
-      echo "$METERSPHERE_API_DEFINITION_LIST_PATH|$METERSPHERE_API_DEFINITION_GET_PATH|$METERSPHERE_API_DEFINITION_CREATE_PATH"
+      echo "$METERSPHERE_API_DEFINITION_LIST_PATH|$METERSPHERE_API_DEFINITION_GET_PATH|$METERSPHERE_API_DEFINITION_CREATE_PATH|$METERSPHERE_API_DEFINITION_IMPORT_PATH"
       ;;
     api-case)
       echo "$METERSPHERE_API_CASE_LIST_PATH|$METERSPHERE_API_CASE_GET_PATH|$METERSPHERE_API_CASE_CREATE_PATH"
@@ -303,6 +304,9 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   list [关键词|JSON]
   get <id>
   create <JSON>
+  generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
+  import-generate <projectId> <spec> [moduleId] (api: 导入 spec 生成定义+用例计划，不写入用例)
+  import-create <projectId> <spec> [moduleId] (api: 导入 spec → 定义 → 用例，幂等去重)
   help
 
 示例:
@@ -325,6 +329,10 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms case-review-user list <review-id>
   ms api list '{"keyword":"用户"}'
   ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"api-1"}'
+  ms api-case generate-create <projectId>
+  ms api-case generate-create <projectId> <definitionId> [<definitionId>...]
+  ms api import-create <projectId> /path/to/openapi.json
+  ms api import-generate <projectId> https://example.com/api-docs
   ms comment save <caseId> <description> [type] [belongId]
   ms comment list <caseId> [type [belongId]]
   ms comment delete <commentId>
@@ -507,6 +515,516 @@ elif isinstance(data, dict) and data.get("id"):
   trap - EXIT
 }
 
+# 批量生成并创建接口用例：读取接口定义详情 → ms_generate_case.py 生成变体 →
+# 逐条 multipart POST /api/testcase/create。
+# 与 batch_create_functional_cases 不同：单条失败继续处理，仅当 0 条创建成功时非零退出。
+# 关键（T1 实测 wire proof）：create 载荷的 request 字段必须是嵌套对象——
+# 服务端对 request-as-JSON-string 返回 HTTP 400（@RequestPart("request") 绑定拒绝）。
+# 因此生成器输出的紧凑 JSON 字符串 request 在此 json.loads 回对象后再写入载荷文件。
+generate_create_api_cases() {
+  local project_id="$1"
+  shift || true
+  local -a def_ids=("$@")
+
+  need_base_url
+  need_keys
+
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+
+  # 1) 无显式定义 id → 分页列出项目全部 HTTP 定义
+  #    实测响应（POST /api/api/definition/list/{goPage}/{pageSize}）：
+  #    data.listObject（数组）/ data.itemCount（总数）/ data.pageCount（总页数）。
+  #    分页检测：有 pageCount 时按 page >= pageCount 停止；否则 listObject 长度 < pageSize 即末页。
+  if [[ ${#def_ids[@]} -eq 0 ]]; then
+    local page=1 page_size=500
+    local list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+    list_path="${list_path/\{pageSize\}/$page_size}"
+    local body
+    body="$(python3 - "$project_id" "$METERSPHERE_PROTOCOLS_JSON" <<'PY'
+import json, sys
+project_id, protocols_json = sys.argv[1], sys.argv[2]
+try:
+    protocols = json.loads(protocols_json)
+except Exception:
+    protocols = ["HTTP"]
+print(json.dumps({"projectId": project_id, "protocols": protocols}, ensure_ascii=False))
+PY
+)"
+    while :; do
+      local resp
+      resp="$(request POST "$list_path" "$body" "api")"
+      local ids
+      ids="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+data = d.get("data") or {}
+items = data.get("listObject") or []
+for it in items:
+    if isinstance(it, dict) and it.get("id"):
+        print(it["id"])
+')" || die "定义列表解析失败: $resp"
+      while IFS= read -r id; do
+        [[ -n "$id" ]] && def_ids+=("$id")
+      done <<< "$ids"
+      local page_count item_count got
+      page_count="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+pc = data.get("pageCount")
+print(pc if isinstance(pc, int) else "")
+')"
+      item_count="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+ic = data.get("itemCount")
+print(ic if isinstance(ic, int) else "")
+')"
+      got="$(printf '%s' "$ids" | grep -c . || true)"
+      if [[ -n "$page_count" ]] && (( page >= page_count )); then
+        break
+      fi
+      if [[ -z "$page_count" ]] && (( got < page_size )); then
+        break
+      fi
+      page=$((page + 1))
+      list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+      list_path="${list_path/\{pageSize\}/$page_size}"
+    done
+    echo "共发现 ${#def_ids[@]} 个接口定义（项目 $project_id）"
+  fi
+
+  local total=0 created=0
+  local def_id
+  for def_id in "${def_ids[@]}"; do
+    local detail_file="$tmp_dir/detail.json"
+    local resp
+    resp="$(request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$def_id")" "" "api")"
+    printf '%s' "$resp" > "$detail_file"
+    local variants_file="$tmp_dir/variants.json"
+    if ! python3 "$SCRIPT_DIR/ms_generate_case.py" "$detail_file" > "$variants_file" 2> "$tmp_dir/gen.err"; then
+      echo "定义 $def_id 生成用例失败: $(cat "$tmp_dir/gen.err")"
+      continue
+    fi
+    # 变体 request（紧凑 JSON 字符串）→ 嵌套对象，逐行输出完整 create 载荷
+    # 服务端实测（error.log）：不传 id 报 Column 'id' cannot be null——每条用例必须显式携带 uuid4 id。
+    local payloads_file="$tmp_dir/payloads.jsonl"
+    if ! python3 - "$variants_file" "$payloads_file" <<'PY'
+import json, sys, uuid
+variants = json.load(open(sys.argv[1], encoding='utf-8'))
+if not isinstance(variants, list):
+    print('错误: 生成器输出不是 JSON 数组', file=sys.stderr)
+    sys.exit(1)
+with open(sys.argv[2], 'w', encoding='utf-8') as f:
+    for v in variants:
+        if not isinstance(v, dict):
+            print('错误: 变体不是 JSON 对象', file=sys.stderr)
+            sys.exit(1)
+        req = v.get('request')
+        if isinstance(req, str):
+            try:
+                v['request'] = json.loads(req)
+            except ValueError as exc:
+                print(f'错误: 变体 request 不是合法 JSON: {exc}', file=sys.stderr)
+                sys.exit(1)
+        if not v.get('id'):
+            v['id'] = str(uuid.uuid4())
+        if not v.get('priority'):
+            v['priority'] = 'P1'
+        f.write(json.dumps(v, ensure_ascii=False) + '\n')
+PY
+    then
+      echo "定义 $def_id 载荷转换失败: $(cat "$tmp_dir/gen.err" 2>/dev/null || true)"
+      continue
+    fi
+    # 逐条 multipart 创建：复用 generate_signature，绝不手写签名
+    local line
+    while IFS= read -r line; do
+      total=$((total + 1))
+      local tmp_json="$tmp_dir/payload.json"
+      printf '%s' "$line" > "$tmp_json"
+      local signature
+      signature="$(generate_signature)"
+      local cresp
+      cresp="$(curl -sS -X POST \
+        -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+        -H "signature: $signature" \
+        -F "request=@${tmp_json};type=application/json" \
+        "${METERSPHERE_BASE_URL%/}/api${METERSPHERE_API_CASE_CREATE_PATH}")"
+      local case_id case_name
+      case_name="$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("name") or "")' 2>/dev/null || true)"
+      case_id="$(printf '%s' "$cresp" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data=d.get("data")
+if isinstance(data, str) and data:
+    print(data)
+elif isinstance(data, dict) and data.get("id"):
+    print(data["id"])
+' 2>/dev/null || true)"
+      if [[ -n "$case_id" ]]; then
+        echo "已创建用例: $case_id ($case_name)"
+        created=$((created + 1))
+      else
+        echo "用例创建失败: $case_name — $cresp"
+      fi
+    done < "$payloads_file"
+  done
+
+  echo "generate-create 完成: 共 $total 个用例，成功创建 $created 个"
+  rm -rf "$tmp_dir"
+  trap - EXIT
+  if (( created == 0 )); then
+    return 1
+  fi
+  return 0
+}
+
+# ===== import 相关（M2: spec → 定义 → 用例，含去重）=====
+
+# 导入 spec 文件到定义；回显原始 import 响应 JSON（definitions 数组在 data.data）
+# 参数: project_id spec_path module_id(可空)
+import_definitions() {
+  local project_id="$1" spec_path="$2" module_id="${3:-}"
+  need_base_url
+  need_keys
+  require_project_id
+  local import_body tmp_json signature resp
+  # 构建 ApiTestImportRequest（moduleId 为空时省略键）
+  import_body="$(python3 - "$project_id" "$module_id" <<'PY'
+import json, sys
+project_id, module_id = sys.argv[1], sys.argv[2]
+body = {"projectId": project_id, "platform": "Swagger2", "modeId": "fullCoverage", "protocol": "HTTP", "origin": "skill"}
+if module_id:
+    body["moduleId"] = module_id
+print(json.dumps(body, ensure_ascii=False))
+PY
+)"
+  tmp_json="$(mktemp)"
+  printf '%s' "$import_body" > "$tmp_json"
+  signature="$(generate_signature)"
+  resp="$(curl -sS -X POST \
+    -H "accessKey: ${METERSPHERE_ACCESS_KEY}" \
+    -H "signature: ${signature}" \
+    -F "file=@${spec_path};type=application/json" \
+    -F "request=@${tmp_json};type=application/json" \
+    "${METERSPHERE_BASE_URL%/}/api${METERSPHERE_API_DEFINITION_IMPORT_PATH}")"
+  rm -f "$tmp_json"
+  echo "$resp"
+}
+
+# definition_ids_by_name: 分页拉取项目持久化定义列表，输出 "id|name|method" 行
+# 参数: project_id
+# 背景: fullCoverage 重复导入按 path 去重不落新行，但导入响应 data.data[] 返回
+#       解析阶段新生成、不可查询的 id（GET → data:null）。须按 name 从持久化
+#       列表解析真实 id（详见 references/ms-api.md「接口定义导入幂等语义」）。
+definition_ids_by_name () {
+  local project_id="$1"
+  local page=1 page_size=500
+  local list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+  list_path="${list_path/\{pageSize\}/$page_size}"
+  local body
+  body="$(python3 - "$project_id" "$METERSPHERE_PROTOCOLS_JSON" <<'PY'
+import json, sys
+project_id, protocols_json = sys.argv[1], sys.argv[2]
+try:
+    protocols = json.loads(protocols_json)
+except Exception:
+    protocols = ["HTTP"]
+print(json.dumps({"projectId": project_id, "protocols": protocols}, ensure_ascii=False))
+PY
+)"
+  while :; do
+    local resp
+    resp="$(request POST "$list_path" "$body" "api")" || return 1
+    printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(1)
+data = d.get("data") or {}
+items = data.get("listObject") or []
+for it in items:
+    if isinstance(it, dict) and it.get("id"):
+        print("%s|%s|%s" % (it["id"], it.get("name") or "", it.get("method") or ""))
+' || return 1
+    local page_count got
+    page_count="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+pc = data.get("pageCount")
+print(pc if isinstance(pc, int) else "")
+')"
+    got="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+data = d.get("data") or {}
+print(len(data.get("listObject") or []))
+')"
+    if [[ -n "$page_count" ]] && (( page >= page_count )); then
+      break
+    fi
+    # 无 pageCount 时：本页行数 < page_size 即末页（与 generate_create_api_cases 一致）
+    if [[ -z "$page_count" ]] && (( got < page_size )); then
+      break
+    fi
+    page=$((page + 1))
+    list_path="${METERSPHERE_API_DEFINITION_LIST_PATH/\{goPage\}/$page}"
+    list_path="${list_path/\{pageSize\}/$page_size}"
+  done
+  return 0
+}
+
+# import-generate: 只导入定义 + 生成用例计划（不写入用例）
+# 参数: project_id spec_source module_id(可空)
+import_generate () {
+  local project_id="$1" spec_source="$2" module_id="${3:-}"
+  local resolved name spec_path resp defs_json
+  resolved="$(python3 "$SCRIPT_DIR/ms_import_helper.py" resolve "$spec_source")"
+  spec_path="${resolved%%|*}"
+  name="${resolved##*|}"
+  echo "已解析 spec: $name" >&2
+  resp="$(import_definitions "$project_id" "$spec_path" "$module_id")"
+  # 解析 data.data -> [{id,name}]
+  defs_json="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps((d.get("data") or {}).get("data", []), ensure_ascii=False))')"
+  local tmp_dir def_lines def_id def_name def_method resolved_def_id name_map detail_file variants_file variants
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+  def_lines="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join("%s|%s|%s" % (x.get("id",""), x.get("name") or "", x.get("method") or "") for x in json.load(sys.stdin)))')"
+  echo '{"definitions":' > "$tmp_dir/out.json"
+  printf '%s' "$defs_json" >> "$tmp_dir/out.json"
+  echo ',"cases_plan":[' >> "$tmp_dir/out.json"
+  # 拉取持久化定义列表（一次/运行，dry-run 容错）：重复导入时响应 id 可能未持久化
+  name_map="$(definition_ids_by_name "$project_id")" || true
+  local first=1
+  while IFS= read -r def_line; do
+    [[ -n "$def_line" ]] || continue
+    def_id="${def_line%%|*}"
+    local rest="${def_line#*|}"
+    def_name="${rest%|*}"
+    def_method="${rest##*|}"
+    resolved_def_id="$def_id"
+    if [[ -n "$def_name" && -n "$name_map" ]]; then
+      resolved_def_id="$(python3 -c '
+import sys
+name_map, def_name, def_method, resp_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+rows = [l.split("|", 2) for l in name_map.splitlines() if l.strip()]
+cands = [r for r in rows if len(r) >= 2 and r[1] == def_name]
+if len(cands) == 1:
+    print(cands[0][0])
+elif len(cands) > 1:
+    pick = cands[0][0]
+    if def_method:
+        m = [r for r in cands if len(r) >= 3 and r[2] == def_method]
+        if len(m) == 1:
+            pick = m[0][0]
+    print("WARN|" + pick)
+else:
+    print(resp_id)
+' "$name_map" "$def_name" "$def_method" "$def_id")" || resolved_def_id="$def_id"
+      if [[ "$resolved_def_id" == "WARN|"* ]]; then
+        echo "警告: 同名定义多个，取首个（${resolved_def_id#WARN|}）" >&2
+        resolved_def_id="${resolved_def_id#WARN|}"
+      fi
+    fi
+    detail_file="$tmp_dir/detail_${resolved_def_id}.json"
+    if ! request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$resolved_def_id")" "" "api" > "$detail_file"; then
+      echo "定义 $def_name：导入响应 id $def_id 未持久化（解析 id $resolved_def_id，GET data:null），跳过" >&2
+      continue
+    fi
+    variants_file="$tmp_dir/variants_${resolved_def_id}.json"
+    if ! python3 "$SCRIPT_DIR/ms_generate_case.py" "$detail_file" > "$variants_file" 2> "$tmp_dir/gen.err"; then
+      echo "定义 $def_id 生成用例失败: $(cat "$tmp_dir/gen.err")" >&2
+      continue
+    fi
+    variants="$(python3 -c 'import json,sys; print(",".join('"'"'\"%s\"'"'"' % v["name"] for v in json.load(open(sys.argv[1]))))' "$variants_file")"
+    if (( first )); then first=0; else printf ',' >> "$tmp_dir/out.json"; fi
+    printf '{"definitionId":"%s","variants":[%s]}' "$resolved_def_id" "$variants" >> "$tmp_dir/out.json"
+  done <<< "$def_lines"
+  echo ']}' >> "$tmp_dir/out.json"
+  cat "$tmp_dir/out.json"
+  rm -rf "$tmp_dir"
+  trap - EXIT
+}
+
+# import-create: 导入定义 + 写入用例（幂等：已存在同名变体则跳过）
+# 参数: project_id spec_source module_id(可空)
+import_create () {
+  local project_id="$1" spec_source="$2" module_id="${3:-}"
+  need_base_url
+  need_keys
+  require_project_id
+  local resolved spec_path
+  resolved="$(python3 "$SCRIPT_DIR/ms_import_helper.py" resolve "$spec_source")"
+  spec_path="${resolved%%|*}"
+  local resp defs_json tmp_dir def_lines def_id def_name def_method resolved_def_id existing detail_file variants_file payloads_file
+  resp="$(import_definitions "$project_id" "$spec_path" "$module_id")"
+  if ! printf '%s' "$resp" | grep -q '"success":true'; then
+    die "导入定义失败: $resp"
+  fi
+  defs_json="$(printf '%s' "$resp" | python3 -c 'import json,sys; d=json.load(sys.stdin); print(json.dumps((d.get("data") or {}).get("data", []), ensure_ascii=False))')"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' EXIT
+  def_lines="$(printf '%s' "$defs_json" | python3 -c 'import json,sys; print("\n".join("%s|%s|%s" % (x.get("id",""), x.get("name") or "", x.get("method") or "") for x in json.load(sys.stdin)))')"
+  local total=0 created=0 skipped=0 failed=0
+  local headers signature existing_names name_map
+  # existing_case_names 需要 {header:value} dict；复用 generate_signature，绝不手写签名
+  signature="$(generate_signature)"
+  headers="$(python3 -c 'import json,sys; print(json.dumps({"accessKey": sys.argv[1], "signature": sys.argv[2]}))' "$METERSPHERE_ACCESS_KEY" "$signature")"
+  # 拉取持久化定义列表（一次/运行）：重复导入时响应 id 可能未持久化，按 name 解析真实 id
+  name_map="$(definition_ids_by_name "$project_id")" || die "定义列表拉取失败（无法解析持久化 id）"
+  local case_name case_id cresp
+  while IFS= read -r def_line; do
+    [[ -n "$def_line" ]] || continue
+    def_id="${def_line%%|*}"
+    local rest="${def_line#*|}"
+    def_name="${rest%|*}"
+    def_method="${rest##*|}"
+    resolved_def_id="$def_id"
+    if [[ -n "$def_name" && -n "$name_map" ]]; then
+      resolved_def_id="$(python3 -c '
+import sys
+name_map, def_name, def_method, resp_id = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+rows = [l.split("|", 2) for l in name_map.splitlines() if l.strip()]
+cands = [r for r in rows if len(r) >= 2 and r[1] == def_name]
+if len(cands) == 1:
+    print(cands[0][0])
+elif len(cands) > 1:
+    pick = cands[0][0]
+    if def_method:
+        m = [r for r in cands if len(r) >= 3 and r[2] == def_method]
+        if len(m) == 1:
+            pick = m[0][0]
+    print("WARN|" + pick)
+else:
+    print(resp_id)
+' "$name_map" "$def_name" "$def_method" "$def_id")" || resolved_def_id="$def_id"
+      if [[ "$resolved_def_id" == "WARN|"* ]]; then
+        echo "警告: 同名定义多个，取首个（${resolved_def_id#WARN|}）" >&2
+        resolved_def_id="${resolved_def_id#WARN|}"
+      fi
+    fi
+    # 去重预检：取该定义下已有用例名集合（ms_import_helper 未暴露 CLI 子命令，经模块导入调用）
+    existing="$(python3 -c '
+import sys, json
+sys.path.insert(0, sys.argv[1])
+from ms_import_helper import existing_case_names
+names = existing_case_names(sys.argv[2], sys.argv[3], sys.argv[4], json.loads(sys.argv[5]))
+print("\n".join(sorted(names)))
+' "$SCRIPT_DIR" "$project_id" "$resolved_def_id" "$METERSPHERE_BASE_URL" "$headers")" || die "已存在用例预检失败（定义 $def_name / $resolved_def_id）"
+    existing_names="|$(printf '%s\n' "$existing" | tr '\n' '|')"
+    detail_file="$tmp_dir/detail_${resolved_def_id}.json"
+    if ! request GET "$(path_fill "$METERSPHERE_API_DEFINITION_GET_PATH" "$resolved_def_id")" "" "api" > "$detail_file"; then
+      echo "定义 $def_name：detail GET 失败（id $resolved_def_id），跳过" >&2
+      failed=$(( failed + 1 ))
+      continue
+    fi
+    if ! python3 -c '
+import json, sys
+d = json.load(open(sys.argv[1]))
+data = d.get("data")
+raise SystemExit(0 if isinstance(data, dict) else 1)
+' "$detail_file"; then
+      echo "定义 $def_name：导入响应 id $def_id 未持久化（解析 id $resolved_def_id，GET data:null），跳过" >&2
+      failed=$(( failed + 1 ))
+      continue
+    fi
+    variants_file="$tmp_dir/variants_${resolved_def_id}.json"
+    if ! python3 "$SCRIPT_DIR/ms_generate_case.py" "$detail_file" > "$variants_file" 2> "$tmp_dir/gen.err"; then
+      echo "定义 $def_id 生成用例失败: $(cat "$tmp_dir/gen.err")" >&2
+      continue
+    fi
+    payloads_file="$tmp_dir/payloads_${def_id}.jsonl"
+    if ! python3 - "$variants_file" "$payloads_file" <<'PY'
+import json, sys, uuid
+variants = json.load(open(sys.argv[1]))
+with open(sys.argv[2], "w") as f:
+    for v in variants:
+        if isinstance(v.get("request"), str):
+            v["request"] = json.loads(v["request"])
+        if not v.get("id"):
+            v["id"] = str(uuid.uuid4())
+        if not v.get("priority"):
+            v["priority"] = "P1"
+        f.write(json.dumps(v, ensure_ascii=False) + "\n")
+PY
+    then
+      echo "定义 $def_id 载荷转换失败" >&2
+      continue
+    fi
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      total=$(( total + 1 ))
+      case_name="$(printf '%s' "$line" | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["name"])')"
+      if [[ -n "$existing_names" ]] && [[ "$existing_names" == *"|${case_name}|"* ]]; then
+        echo "跳过(已存在): $case_name"
+        skipped=$(( skipped + 1 ))
+        continue
+      fi
+      tmp_json="$tmp_dir/payload_$$.json"
+      printf '%s' "$line" > "$tmp_json"
+      signature="$(generate_signature)"
+      cresp="$(curl -sS -X POST \
+        -H "accessKey: ${METERSPHERE_ACCESS_KEY}" \
+        -H "signature: ${signature}" \
+        -F "request=@${tmp_json};type=application/json" \
+        "${METERSPHERE_BASE_URL%/}/api${METERSPHERE_API_CASE_CREATE_PATH}")"
+      rm -f "$tmp_json"
+      case_id="$(printf '%s' "$cresp" | python3 -c 'import json,sys
+try:
+    d=json.load(sys.stdin)
+except Exception:
+    print(""); raise SystemExit
+data=d.get("data")
+if isinstance(data, str) and data:
+    print(data)
+elif isinstance(data, dict):
+    print(data.get("id") or "")
+else:
+    print("")')"
+      if [[ -n "$case_id" ]]; then
+        echo "已创建用例: $case_id ($case_name)"
+        created=$(( created + 1 ))
+      else
+        echo "用例创建失败: $case_name — $cresp"
+      fi
+    done < "$payloads_file"
+  done <<< "$def_lines"
+  if (( failed > 0 )); then
+    echo "import-create 完成: 共 $total 个用例，新增 $created 个，跳过 $skipped 个，失败 $failed 个（详见上方诊断）"
+  else
+    echo "import-create 完成: 共 $total 个用例，新增 $created 个，跳过 $skipped 个"
+  fi
+  rm -rf "$tmp_dir"
+  trap - EXIT
+  if (( created == 0 && skipped == 0 )); then
+    return 1
+  fi
+  return 0
+}
+
 case "$action" in
   list)
     arg="${1:-}"
@@ -686,20 +1204,33 @@ PY
     batch_create_functional_cases "$json_file"
     ;;
   generate-create)
-    [[ "$resource" == "functional-case" ]] || die "generate-create 仅支持 functional-case 资源"
-    project_id="${1:-}"
-    module_id="${2:-}"
-    template_id="${3:-}"
-    req_file="${4:-}"
-    [[ -n "$project_id" ]] || die "generate-create 需要 projectId"
-    [[ -n "$module_id" ]] || die "generate-create 需要 moduleId"
-    [[ -n "$template_id" ]] || die "generate-create 需要 templateId"
-    [[ -n "$req_file" ]] || die "generate-create 需要 requirement-file"
-    require_project_id
-    tmp_json="$(mktemp)"
-    python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$req_file" --templateId "$template_id" > "$tmp_json"
-    batch_create_functional_cases "$tmp_json"
-    rm -f "$tmp_json"
+    if [[ "$resource" == "functional-case" ]]; then
+      project_id="${1:-}"
+      module_id="${2:-}"
+      template_id="${3:-}"
+      req_file="${4:-}"
+      [[ -n "$project_id" ]] || die "generate-create 需要 projectId"
+      [[ -n "$module_id" ]] || die "generate-create 需要 moduleId"
+      [[ -n "$template_id" ]] || die "generate-create 需要 templateId"
+      [[ -n "$req_file" ]] || die "generate-create 需要 requirement-file"
+      require_project_id
+      tmp_json="$(mktemp)"
+      python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$req_file" --templateId "$template_id" > "$tmp_json"
+      batch_create_functional_cases "$tmp_json"
+      rm -f "$tmp_json"
+    elif [[ "$resource" == "api-case" ]]; then
+      if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" ]]; then
+        usage
+        exit 0
+      fi
+      project_id="${1:-${METERSPHERE_PROJECT_ID:-}}"
+      [[ -n "$project_id" ]] || die "api-case generate-create 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+      shift || true
+      generate_create_api_cases "$project_id" "$@"
+      exit $?
+    else
+      die "generate-create 仅支持 functional-case / api-case 资源"
+    fi
     ;;
   upload)
     [[ "$resource" == "attachment" ]] || die "upload 仅支持 attachment 资源"
@@ -745,10 +1276,22 @@ PY
     echo "已下载 $bytes 字节到 $outfile"
     ;;
   import-generate)
-    die "import-generate 仅支持 v3（MeterSphere v3 分支）；v2 无导入生成能力，请使用 create 直接写入"
+    [[ "$resource" == "api" ]] || die "import-generate 仅支持 api 资源"
+    project_id="${1:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "import-generate 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+    spec_source="${2:-}"
+    [[ -n "$spec_source" ]] || die "import-generate 需要 spec 文件路径或 URL"
+    import_generate "$project_id" "$spec_source" "${3:-}"
+    exit $?
     ;;
   import-create)
-    die "import-create 仅支持 v3（MeterSphere v3 分支）；v2 无导入生成能力，请使用 create 直接写入"
+    [[ "$resource" == "api" ]] || die "import-create 仅支持 api 资源"
+    project_id="${1:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "import-create 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+    spec_source="${2:-}"
+    [[ -n "$spec_source" ]] || die "import-create 需要 spec 文件路径或 URL"
+    import_create "$project_id" "$spec_source" "${3:-}"
+    exit $?
     ;;
   help|-h|--help)
     usage

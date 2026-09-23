@@ -307,7 +307,14 @@ METERSPHERE_DEFAULT_VERSION_ID=  # 默认版本 ID (避免使用硬编码值)
   - `METERSPHERE_DEFAULT_VERSION_ID`
 - 在使用前检查并替换为正确的项目 ID
 
-### 5. 首次使用建议
+### 5. 已知陷阱（接口定义导入，现场实测证实）
+
+- **双份前缀必须**：接口定义端点走 `{BASE}/api/api/definition/...`（v2 网关剥离首段后服务 context 为 `/api`）；单份 `{BASE}/api/definition/...` 得 Spring 404（无 `success` 键）——是路径错，不是数据不存在。
+- **重复导入报「缺少 definition request」时**：fullCoverage 按 path 去重不落新行，但导入响应 `data.data[]` 返回解析阶段新生成的**不可查询 id**（GET 得 `data:null`）。不要直接消费响应 id——按 name 从 `/api/api/definition/list` 解析持久化 id 再做 detail GET（v2 `import-create`/`import-generate` 已内置此解析）。
+- **勿消费导入响应内联 request**：`apiDefinitionId` 必须来自持久化 id 的 detail，否则用例归属错误。
+- **同名定义多个**：按 name 解析取首个并输出中文警告；spec 端点 name 变更再导入会更新既有定义 name（id 不变），旧变体名不匹配 → 生成新变体（幂等：重跑跳过）。
+
+### 6. 首次使用建议
 1. 复制 `.env.example` 为 `.env` 并填写实际值
 2. 在非生产环境或沙箱中测试
 3. 使用最小权限的凭证
