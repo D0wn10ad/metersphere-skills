@@ -1,12 +1,12 @@
 # v2 工单驱动接口用例生成 Prompt 模板（Phabricator 工单 → 接口用例）
 
-用于 v2 分支的接口用例（api-case）生成。工作流：通过 Phabricator MCP 读取技术工单与用户故事，解析模块 YYYYY 的 ID，把工单需求映射到模块内已有 HTTP 接口定义，再按标准用例构建流程生成用例。
+用于 v2 分支的接口用例（api-case）生成。工作流：通过 Phabricator MCP 读取技术工单与用户故事，解析目标子模块的 ID，把工单需求映射到模块内已有 HTTP 接口定义，再按标准用例构建流程生成用例。
 
 ## 使用方式
 
-1. 通过 Phabricator MCP 读取技术工单 TXXXX 与用户故事 TXXXX（按任务 ID 列出 / 获取），提取需求、验收标准、受影响接口、数据约束
+1. 通过 Phabricator MCP 读取技术工单 <taskId> 与用户故事 <taskId>（按任务 ID 列出 / 获取），提取需求、验收标准、受影响接口、数据约束
 2. 解析项目 ID：`./skills/scripts/v2/ms.sh project list '<workspaceId>'`（按 name 字段匹配项目名，0 个或多个匹配时告警）
-3. 解析模块 ID：`./skills/scripts/v2/ms.sh api-module list '<projectId>'`（按 name 匹配模块 YYYYY，0 个或多个匹配时告警）
+3. 解析模块 ID：`./skills/scripts/v2/ms.sh api-module list '<projectId>'`（按 name 匹配目标子模块名，0 个或多个匹配时告警）
 4. 枚举模块内接口定义：`./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>","protocols":["HTTP"]}'`
 5. 确定性批量生成：`./skills/scripts/v2/ms.sh api-case generate-create '<projectId>' <definitionId>...`（显式列出全部 definitionId）
 6. 对覆盖不足的定义，把 `./skills/scripts/v2/ms.sh api get <definitionId>` 的 JSON 贴给 AI，附上下面提示词，生成增强用例
@@ -14,11 +14,11 @@
 
 ## Prompt
 
-你现在是资深接口测试工程师。请按以下流程，根据 Phabricator 工单为模块 YYYYY 的已有 HTTP 接口生成接口用例。
+你现在是资深接口测试工程师。请按以下流程，根据 Phabricator 工单为目标子模块的已有 HTTP 接口生成接口用例。
 
 **阶段 1：读取 Phabricator 工单**
 
-通过 Phabricator MCP 获取技术工单 TXXXX 与用户故事 TXXXX（按任务 ID 列出 / 获取任务详情）。从工单中提取：
+通过 Phabricator MCP 获取技术工单 <taskId> 与用户故事 <taskId>（按任务 ID 列出 / 获取任务详情）。从工单中提取：
 
 - 需求（本次要做什么）
 - 验收标准（可验证的完成条件）
@@ -27,14 +27,14 @@
 
 如果当前环境的 Phabricator MCP 不具备按任务 ID 获取工单的 affordance，停止并报告，不要自行编造工具或数据。
 
-**阶段 2：解析模块 YYYYY 的 ID**
+**阶段 2：解析目标子模块的 ID**
 
 1. 用 `./skills/scripts/v2/ms.sh project list '<workspaceId>'` 列出项目，按 `name` 字段匹配目标项目名，得到 `projectId`。0 个匹配说明项目名写错或 workspaceId 不对；多个匹配说明项目名不唯一，需人工确认，不要擅自选一个。
-2. 用 `./skills/scripts/v2/ms.sh api-module list '<projectId>'` 列出模块树，遍历 JSON 按 `name` 匹配模块 YYYYY，得到 `moduleId`。0 个匹配说明模块名写错；多个匹配说明模块名不唯一，需人工确认。
+2. 用 `./skills/scripts/v2/ms.sh api-module list '<projectId>'` 列出模块树，遍历 JSON 按 `name` 匹配目标子模块名，得到 `moduleId`。0 个匹配说明模块名写错；多个匹配说明模块名不唯一，需人工确认。
 
-**阶段 3：把工单需求映射到模块 YYYYY 的已有接口定义**
+**阶段 3：把工单需求映射到目标子模块的已有接口定义**
 
-用 `./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>","protocols":["HTTP"]}'` 列出项目内全部 HTTP 接口定义，按模块过滤出模块 YYYYY 的定义。对每个候选定义执行 `./skills/scripts/v2/ms.sh api get <definitionId>` 读取详情，结合工单的受影响接口与验收标准，确定哪些定义需要用例：
+用 `./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>","protocols":["HTTP"]}'` 列出项目内全部 HTTP 接口定义，按模块过滤出目标子模块的定义。对每个候选定义执行 `./skills/scripts/v2/ms.sh api get <definitionId>` 读取详情，结合工单的受影响接口与验收标准，确定哪些定义需要用例：
 
 - 工单明确改动 / 影响的接口：必须覆盖。
 - 与验收标准直接相关的接口：必须覆盖。
