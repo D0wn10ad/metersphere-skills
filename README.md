@@ -598,6 +598,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - `skills/references/ai-api-bundle-prompt.md`
 - `skills/references/ai-v2-functional-case-prompt.md`
 - `skills/references/ai-v2-api-case-prompt.md`
+- `skills/references/ai-module-api-case-prompt.md`
+- `skills/references/ai-phabricator-api-case-prompt.md`
 
 ---
 
