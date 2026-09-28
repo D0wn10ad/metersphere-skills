@@ -42,14 +42,17 @@
 
 **阶段 4：判定接口受众并应用网关前缀**
 
-根据工单内容判断每个受影响接口的受众，并据此确定端点路径前缀：
+根据工单内容判断每个受影响接口的受众，并据此确定端点路径前缀（网关主机前缀）：
 
-- 工单明确接口面向**管理员**（管理端 / admin）使用：该接口端点路径带 `/eapi/` 前缀。
-- 工单明确接口面向**普通用户**（用户端 / 前台）使用：该接口端点路径带 `/iapi/` 前缀。
-- 同一逻辑接口可能同时被两类用户使用，经不同 API 网关暴露为两个不同端点（如 `/eapi/...` 与 `/iapi/...`）：二者都要覆盖——在阶段 3 的候选定义中，将这两个端点对应的定义都纳入用例生成范围。
+- 工单明确接口面向**管理员**（管理端 / admin）使用：该接口端点路径带 `/iapi/` 前缀（IAPI 网关主机如 `iapi.dev.igus.cn`，路径常含 `managed` 段）。
+- 工单明确接口面向**普通用户**（用户端 / 前台）使用：该接口端点路径带 `/eapi/` 前缀（EAPI 网关主机如 `eapi.dev.igus.cn`）。
+- 同一逻辑接口可能同时被两类用户使用，经不同 API 网关暴露为两个不同端点（如 `iapi...` 与 `eapi...` 两套网关各一个实例）：二者都要覆盖——在阶段 3 的候选定义中，将这两个端点对应的定义都纳入用例生成范围。
+- 分组与模块命名按网关区分，形如 `<微服务名>_iapi` / `<微服务名>_eapi`：`XXX` 为微服务名**占位符**（如 `XXX_iapi`、`XXX_eapi`），使用时须替换为具体微服务名、不可字面使用——微服务 `Admin`、`order-service` 分别对应 `Admin-iapi`、`order-service_eapi`（实测另有 `iapi_` 前缀形式）。实测分组示例（`TS_costService`、`TS_ecom_costOuer_APIs`、`TS_edge_OA_APIs`、`TS_admin_iapi_APIs`、`E2E_cost`）：分组常带 `TS_` 前缀，模块（folder）常以 `API::` 开头（`API::configurations`、`API::article-cost/{article_code}`、`API::costcoefficient`、`API::workshop-infos`），用例常见 `流: <场景>`（如 `流: 计算材料成本`）与 `TC## - <描述>`（如 `TC01 - 委外采购件 不计算工时，总成本=材料成本×数量×成本系数`）两种形态。阶段 2 匹配目标子模块名、阶段 3 过滤定义时按受众选择对应网关的模块——同名模块在两个网关下会各有一个变体，不要选错。
 - 工单未明确受众：不臆断前缀，按定义中的原始路径处理，并在报告中注明需人工确认。
 
-在阶段 3 读取定义详情（`./skills/scripts/v2/ms.sh api get <definitionId>` 得到 method / path）时，结合本阶段判定核对 path 前缀：若工单受众是管理员而所选定义的 path 不带 `/eapi/`，优先怀疑选错了定义（可能还存在同名 `/eapi/` 变体），继续在 `./skills/scripts/v2/ms.sh api list` 结果中查找；**不要修改定义本身的 path**。
+在阶段 3 读取定义详情（`./skills/scripts/v2/ms.sh api get <definitionId>` 得到 method / path）时，结合本阶段判定核对 path 前缀：若工单受众是管理员而所选定义的 path 不带 `/iapi/`（如主机不含 `iapi`），优先怀疑选错了定义（可能还存在同名 `/iapi/` 变体），继续在 `./skills/scripts/v2/ms.sh api list` 结果中查找；**不要修改定义本身的 path**。
+
+通过 `./skills/scripts/v2/ms.sh api-case create` 创建的每条用例，`tags` 写入工单号（如 `T15215`），便于按 ticket 追溯。
 
 然后进入下面的用例构建流程。该流程与 `skills/references/ai-module-api-case-prompt.md` 中的 `## 用例构建流程（复用）` 一节完全一致，本文件直接复用同一段内容。
 
@@ -131,6 +134,7 @@
   "projectId": "<projectId>",
   "apiDefinitionId": "<apiDefinitionId>",
   "priority": "P1",
+  "tags": ["<ticketNumber>"],
   "description": "验证使用有效用户 ID 获取用户详情的成功场景"
 }
 ```
