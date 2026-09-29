@@ -3,3 +3,5 @@
 .idea/
 .omo/
 __pycache__/
+.venv/
+.pytest_cache/
