@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from pathlib import Path
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,7 +66,8 @@ class TestResolveSpecToFile(unittest.TestCase):
             os.unlink("/tmp/ms-spec-src.json")
 
     def test_local_existing_file(self):
-        path, name = h.resolve_spec_to_file("/tmp/opencode/springdoc-sample-bookstore.json")
+        fixture = Path(__file__).resolve().parent / "fixtures" / "springdoc-sample-bookstore.json"
+        path, name = h.resolve_spec_to_file(str(fixture))
         self.assertEqual(name, "springdoc-sample-bookstore.json")
         self.assertTrue(os.path.isabs(path))
 

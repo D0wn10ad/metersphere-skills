@@ -11,6 +11,7 @@
 """
 import json
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -18,10 +19,10 @@ sys.path.insert(0, 'skills/scripts/v2')
 
 from ms_generate_case import build_case_variants  # noqa: E402
 
-FIXTURE = 'tests/v2/fixtures/definition_get_c6e4293e.json'
+FIXTURE = str(Path(__file__).resolve().parent / "fixtures" / "definition_get.json")
 
-FI_LIVE_DEF_ID = 'c6e4293e-8118-4246-bef9-e871719224d0'
-FI_PROJECT_ID = '184896ef-073c-11f1-9f0a-0242ac1e0a08'
+FI_LIVE_DEF_ID = '<definitionId>'
+FI_PROJECT_ID = '<projectId>'
 
 
 def load_live_detail() -> dict:
@@ -296,11 +297,14 @@ def test_status_and_protocol_fields_present():
 
 
 # ------------------------------------------------- CLI
+_SCRIPT = Path(__file__).resolve().parents[2] / "skills" / "scripts" / "v2" / "ms_generate_case.py"
+
+
 def _run_cli(args, stdin_text=None):
     import subprocess
     proc = subprocess.run(
-        [sys.executable, 'skills/scripts/v2/ms_generate_case.py'] + args,
-        capture_output=True, text=True, input=stdin_text, cwd='.',
+        [sys.executable, str(_SCRIPT)] + args,
+        capture_output=True, text=True, input=stdin_text,
     )
     return proc
 
