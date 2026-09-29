@@ -147,11 +147,11 @@ references/ai-api-bundle-prompt.md
 
 > 以下均为现场实测证实的事实（v2.10.26-lts），适用于 `api import-generate` / `api import-create`。
 
-### 双份前缀是正确且必需的
+### 双份前缀的来源与覆盖方式
 
-- 接口定义相关端点必须走**双份前缀** `{BASE}/api/api/definition/...`（v2 网关 `/{serviceId}/**` 剥离首段后，服务自身 context 为 `/api`）。
+- 接口定义端点实际走 `{BASE}/api/api/definition/...`：路径常量 `METERSPHERE_API_DEFINITION_LIST_PATH` / `_GET_PATH` / `_CREATE_PATH` / `_IMPORT_PATH`（`ms.sh` 内默认值）已包含首段 `/api`，`service_prefix()` 再拼上网关段 `/api`——双份前缀是这两个常量共同产生的结果，不是需要手工拼接的额外规则。
 - **单份前缀** `{BASE}/api/definition/get/{id}` 会得到 Spring 404（`{"status":404,"error":"Not Found"}`，无 `success` 键）——不是数据不存在，是路径打错。
-- `ms.sh` 的 `request()` 第 4 参默认 `api`，传空串 `""` 仍回退为 `api`（`${4:-api}`）——不要试图"改单份"。
+- 部署形态不同的环境可用现有 `METERSPHERE_*_PATH` 环境变量覆盖路径常量（`ms.sh` 的 `request()` 第 4 参默认 `api`，传空串 `""` 仍回退为 `api`）。
 
 ### fullCoverage 重复导入的幂等语义
 

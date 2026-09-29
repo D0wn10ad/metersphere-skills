@@ -20,10 +20,9 @@ security:
 优先用本 skill 自带脚本,不要临时手写 curl。
 
 > **执行前提**:下文所有 `./scripts/ms.sh` 均为相对本技能目录的相对路径。执行前必须先进入技能安装目录(或改用绝对路径):
-> - npx skills 安装(OpenCode 等): `cd ~/.agents/skills/metersphere`
 > - OpenClaw 安装: `cd ~/.openclaw/workspace/skills/metersphere`
 >
-> **MeterSphere v2 用户**:使用 `./scripts/v2/ms.sh`(自动嗅探版本,或设 `METERSPHERE_VERSION=v2` 强制指定)。v2 无组织概念,用工作空间(workspace)。
+> **MeterSphere v2 用户**:使用 `./scripts/v2/ms.sh`(或设 `METERSPHERE_VERSION=v2` 强制指定)。v2 无组织概念,用工作空间(workspace)。
 
 ## 选择工作流
 
@@ -309,10 +308,12 @@ METERSPHERE_DEFAULT_VERSION_ID=  # 默认版本 ID (避免使用硬编码值)
 
 ### 5. 已知陷阱（接口定义导入，现场实测证实）
 
-- **双份前缀必须**：接口定义端点走 `{BASE}/api/api/definition/...`（v2 网关剥离首段后服务 context 为 `/api`）；单份 `{BASE}/api/definition/...` 得 Spring 404（无 `success` 键）——是路径错，不是数据不存在。
+- **双份前缀的来源**：接口定义端点走 `{BASE}/api/api/definition/...`——路径常量（`METERSPHERE_API_DEFINITION_*_PATH`）已含首段 `/api`，`service_prefix()` 再拼网关段，双份前缀是常量共同产生的结果；单份 `{BASE}/api/definition/...` 得 Spring 404（无 `success` 键）——是路径错，不是数据不存在。部署不同可用 `METERSPHERE_*_PATH` 覆盖。
 - **重复导入报「缺少 definition request」时**：fullCoverage 按 path 去重不落新行，但导入响应 `data.data[]` 返回解析阶段新生成的**不可查询 id**（GET 得 `data:null`）。不要直接消费响应 id——按 name 从 `/api/api/definition/list` 解析持久化 id 再做 detail GET（v2 `import-create`/`import-generate` 已内置此解析）。
 - **勿消费导入响应内联 request**：`apiDefinitionId` 必须来自持久化 id 的 detail，否则用例归属错误。
 - **同名定义多个**：按 name 解析取首个并输出中文警告；spec 端点 name 变更再导入会更新既有定义 name（id 不变），旧变体名不匹配 → 生成新变体（幂等：重跑跳过）。
+- **`raw` 是未加防护的逃生口**：`raw GET|POST <path>` 绕过所有写入类守卫（`require_project_id` 等），直接对任意路径发请求——仅用于调试，不要在自动化流程里使用。
+- **`resolve_spec_to_file` 会发起任意外联**：对用户提供的 http/https/file:// URL 直接 GET，且写入的临时文件不会被清理——仅对可信来源使用。
 
 ### 6. 首次使用建议
 1. 复制 `.env.example` 为 `.env` 并填写实际值

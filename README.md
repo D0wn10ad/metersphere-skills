@@ -101,33 +101,52 @@ MeterSphere 本身提供完整的测试资产管理能力，但在日常使用�
 
 ```text
 metersphere-skills/
-├── README.md
 ├── .env.example
+├── .gitignore
+├── AGENTS.md
+├── README.md
 ├── install.sh
-└── skills/
-    ├── SKILL.md
-    ├── references/
-    │   ├── ms-api.md
-    │   ├── ai-functional-case-prompt.md
-    │   ├── ai-api-bundle-prompt.md
-    │   ├── ai-v2-functional-case-prompt.md
-    │   └── ai-v2-api-case-prompt.md
-    └── scripts/
-        ├── ms.sh
-        ├── ms.py
-        ├── ms_generate.py
-        ├── ms_batch.py
-        ├── ms_review_summary.py
-        ├── ms_case_report.py
-        ├── ms_case_report_md.py
-        └── v2/
-            ├── ms.sh
-            ├── ms_generate.py
-            ├── ms_chat_log.py
-            ├── ms_case_report.py
-            ├── ms_review_summary.py
-            └── ms_case_report_md.py
+├── skills/
+│   ├── .env.example
+│   ├── SKILL.md
+│   ├── skill-metadata.json
+│   ├── references/
+│   │   ├── ai-api-bundle-prompt.md
+│   │   ├── ai-functional-case-prompt.md
+│   │   ├── ai-module-api-case-prompt.md
+│   │   ├── ai-v2-api-case-prompt.md
+│   │   ├── ai-v2-functional-case-prompt.md
+│   │   └── ms-api.md
+│   └── scripts/
+│       ├── ms.py
+│       ├── ms.sh
+│       ├── ms_batch.py
+│       ├── ms_case_report.py
+│       ├── ms_case_report_md.py
+│       ├── ms_generate.py
+│       ├── ms_review_summary.py
+│       └── v2/
+│           ├── ms.sh
+│           ├── ms_case_report.py
+│           ├── ms_case_report_md.py
+│           ├── ms_chat_log.py
+│           ├── ms_generate.py
+│           ├── ms_generate_case.py
+│           ├── ms_import_helper.py
+│           └── ms_review_summary.py
+└── tests/
+    └── v2/
+        ├── conftest.py
+        ├── requirements-dev.txt
+        ├── test_ms_generate_case.py
+        ├── test_ms_import_helper.py
+        ├── test_reviewed_semantics.py
+        └── fixtures/
+            ├── definition_get.json
+            └── springdoc-sample-bookstore.json
 ```
+
+> **测试依赖说明**：`tests/v2/requirements-dev.txt` 仅是开发依赖（pytest），不是运行时依赖；测试套件不需要 MeterSphere 实例（全部本地回环或纯本地）。
 
 ### 目录说明
 
@@ -142,7 +161,7 @@ metersphere-skills/
 - `skills/scripts/ms_review_summary.py`：用例评审汇总脚本
 - `skills/scripts/ms_case_report.py`：单用例结构化报告
 - `skills/scripts/ms_case_report_md.py`：单用例 Markdown 报告
-- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_generate.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
+- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_generate.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，或设 `METERSPHERE_VERSION=v2`）
 
 ---
 
@@ -215,7 +234,7 @@ cd ~/.openclaw/workspace/skills/metersphere
 
 以下所有命令均假设已进入技能目录。首次使用前请先复制模板并填写环境变量（见 §6）。
 
-> **MeterSphere v2 用户**：使用 `./scripts/v2/ms.sh`（自动嗅探版本，或设 `METERSPHERE_VERSION=v2` 强制指定）。v2 无组织概念，用工作空间（workspace）。
+> **MeterSphere v2 用户**：使用 `./scripts/v2/ms.sh`（或设 `METERSPHERE_VERSION=v2` 强制指定）。v2 无组织概念，用工作空间（workspace）。
 
 ## 8. 常用命令
 
@@ -356,7 +375,7 @@ cd ~/.openclaw/workspace/skills/metersphere
 #### AI 对话记录（chat-history flow）
 
 ```bash
-python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <label>] [--title <title>] [--out <file>]
+./scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <label>] [--title <title>] [--out <file>]
 ./scripts/v2/ms.sh attachment upload <caseId> conversation-log.md
 ```
 
@@ -530,6 +549,11 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 ## 13. 已知问题与踩坑（现场实测证实）
 
 > 适用于 `api import-generate` / `api import-create`（v2）。详细说明见 `skills/references/ms-api.md` §10。
+
+```bash
+./scripts/v2/ms.sh api import-generate <projectId> ./openapi.json [moduleId]
+./scripts/v2/ms.sh api import-create <projectId> ./openapi.json [moduleId]
+```
 
 - **接口定义端点必须双份前缀** `{BASE}/api/api/definition/...`：单份 `{BASE}/api/definition/...` 得 Spring 404（无 `success` 键）——是路径错，不是数据不存在。
 - **重复导入报「缺少 definition request」**：fullCoverage 按 path 去重不落新行，但导入响应 `data.data[]` 返回解析阶段新生成的不可查询 id（GET 得 `data:null`）。v2 `import-create`/`import-generate` 已内置按 name 从定义列表解析持久化 id 的修复——重复运行同一 spec 会干净跳过（EXIT 0），不再失败。
