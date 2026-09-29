@@ -73,17 +73,16 @@ class TestResolveSpecToFile(unittest.TestCase):
 
     def test_nonexistent_path_errors(self):
         with self.assertRaises(ValueError):
-            h.resolve_spec_to_file("/tmp/opencode/definitely-not-here.json")
+            h.resolve_spec_to_file("/nonexistent/definitely-not-here.json")
 
     def test_bad_suffix_errors(self):
-        src = "/tmp/opencode/not-a-spec.txt"
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write("x")
-        try:
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            src = os.path.join(tmp_dir, "not-a-spec.txt")
+            with open(src, "w", encoding="utf-8") as fh:
+                fh.write("x")
             with self.assertRaises(ValueError):
                 h.resolve_spec_to_file(src)
-        finally:
-            os.unlink(src)
 
     def test_http_404_errors(self):
         server, t = _local_server(SpecDownloadHandler)
