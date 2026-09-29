@@ -37,23 +37,23 @@
 
 ```json
 {
-  "id": "308ded46-6225-4516-8bcd-4b972b37261d",
-  "projectId": "184896ef-073c-11f1-9f0a-0242ac1e0a08",
-  "name": "v2-apicase-qa-1789790932089",
+  "id": "<id>",
+  "projectId": "<projectId>",
+  "name": "<caseName>",
   "priority": "P0",
-  "apiDefinitionId": "4b89bc21-214d-4c11-9acf-0bfc127e7b99",
-  "createUserId": "admin",
-  "updateUserId": "admin",
-  "createTime": 1789790932378,
-  "updateTime": 1789790932378,
-  "num": 100003001,
+  "apiDefinitionId": "<apiDefinitionId>",
+  "createUserId": "<userId>",
+  "updateUserId": "<userId>",
+  "createTime": <timestamp>,
+  "updateTime": <timestamp>,
+  "num": <num>,
   "tags": null,
   "caseStatus": "Underway",
-  "versionId": "3b493bd1-073c-11f1-9f0a-0242ac1e0a08",
+  "versionId": "<versionId>",
   "description": null,
   "request": "null",
-  "createUser": "Administrator",
-  "updateUser": "Administrator",
+  "createUser": "<userName>",
+  "updateUser": "<userName>",
   "apiMethod": "GET",
   "active": false,
   "responseActive": false
@@ -65,8 +65,8 @@
 ```json
 {
   "name": "获取用户详情-200",
-  "projectId": "184896ef-073c-11f1-9f0a-0242ac1e0a08",
-  "apiDefinitionId": "4b89bc21-214d-4c11-9acf-0bfc127e7b99",
+  "projectId": "<projectId>",
+  "apiDefinitionId": "<apiDefinitionId>",
   "priority": "P1",
   "description": "验证使用有效用户 ID 获取用户详情的成功场景"
 }

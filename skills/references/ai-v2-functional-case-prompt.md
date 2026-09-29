@@ -51,8 +51,8 @@ v2 与 v3 的字段不同：v2 使用 `nodeId` / `nodePath`（模块树），不
 ```json
 {
   "name": "用户登录-主流程",
-  "projectId": "184896ef-073c-11f1-9f0a-0242ac1e0a08",
-  "nodeId": "c6f7962d-05ae-4894-9c05-81a7fc2b471f",
+  "projectId": "<projectId>",
+  "nodeId": "<nodeId>",
   "nodePath": "/默认模块/登录",
   "priority": "P0",
   "steps": [
