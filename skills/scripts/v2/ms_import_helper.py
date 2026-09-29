@@ -152,6 +152,13 @@ if __name__ == "__main__":
     sub, arg = sys.argv[1], sys.argv[2]
     if sub == "resolve":
         path, name = resolve_spec_to_file(arg)
+        # F6: resolve may return a downloaded TEMP file (local paths are returned as-is);
+        # this helper's job is only to report the path, so delete the temp copy here.
+        if path != str(Path(arg).expanduser().resolve()):
+            try:
+                os.remove(path)
+            except OSError:
+                pass
         print(f"{path}|{name}")
     elif sub == "parse":
         with open(arg, encoding="utf-8") as fh:

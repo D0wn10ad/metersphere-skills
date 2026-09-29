@@ -10,7 +10,7 @@
   - 必填缺失：仅当 query/rest 存在必填参数时 → 第一个必填置空 + 断言 400
   - 边界场景：仅当存在 string 参数时 → 第一个 string 设为 128 个 'x' + 断言 200
 
-断言注入位置（v2 实测，见 tests/v2/fixtures/definition_get_c6e4293e.json 与
+断言注入位置（v2 实测，见 tests/v2/fixtures/definition_get.json 与
 DoneClaim）：request.hashTree[] 追加 type=Assertions 节点
 （io.metersphere.api.dto.definition.request.assertions.MsAssertions），状态码
 断言存放在该节点 regex[0]：

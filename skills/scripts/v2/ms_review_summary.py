@@ -94,8 +94,8 @@ def fetch_all_functional_cases(project_id: str, keyword: str):
         data = post_json(api_path(fill_path(CASE_LIST_PATH, go_page=go_page, page_size=page_size)), body).get('data') or {}
         lst = data.get('listObject') or []
         rows.extend(lst)
-        total = data.get('itemCount') or len(rows)
-        if len(rows) >= total or not lst:
+        total = data.get('itemCount')  # F8b: do NOT fall back to len(rows) — that makes the break fire after page 1
+        if (total is not None and len(rows) >= total) or not lst:
             break
         go_page += 1
     return rows
@@ -126,8 +126,8 @@ def main():
         # 获取用例的评审状态
         review_status = detail.get('reviewStatus')
 
-        # 新逻辑：review_status in ['PASS', 'UN_PASS']  # 只有评审完成
-        is_reviewed = review_status in ['PASS', 'UN_PASS']
+        # F8a: union rule (AGENTS.md) — reviewed = has review records OR reviewStatus in {PASS, UN_PASS}
+        is_reviewed = (len(reviews) > 0) or (review_status in ('PASS', 'UN_PASS'))
         
         out.append({
             'caseId': case_id,

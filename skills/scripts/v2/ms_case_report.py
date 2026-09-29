@@ -148,7 +148,8 @@ def build_summary(detail: dict, bugs: list, reviews: list):
         'caseReviewCount': detail.get('caseReviewCount', len(reviews)),
         'testPlanCount': detail.get('testPlanCount', 0),
         'demandCount': detail.get('demandCount', 0),
-        'reviewed': len(reviews) > 0,
+        # F8a: union rule (AGENTS.md) — reviewed = has review records OR reviewStatus in {PASS, UN_PASS}
+        'reviewed': (len(reviews) > 0) or (detail.get('reviewStatus') in ('PASS', 'UN_PASS')),
     }
 
 

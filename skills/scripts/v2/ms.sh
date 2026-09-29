@@ -13,13 +13,14 @@ if [[ -f "$ENV_FILE" ]]; then
 fi
 
 METERSPHERE_BASE_URL="${METERSPHERE_BASE_URL:-}"
-METERSPHERE_ACCESS_KEY="${METERSPHERE_ACCESS_KEY:-${METERSPHERE_ACCESS_KEY:-}}"
-METERSPHERE_SECRET_KEY="${METERSPHERE_SECRET_KEY:-${METERSPHERE_SECRET_KEY:-}}"
+METERSPHERE_ACCESS_KEY="${METERSPHERE_ACCESS_KEY:-}"
+METERSPHERE_SECRET_KEY="${METERSPHERE_SECRET_KEY:-}"
 METERSPHERE_PROJECT_ID="${METERSPHERE_PROJECT_ID:-}"
 METERSPHERE_ORGANIZATION_ID="${METERSPHERE_ORGANIZATION_ID:-100001}"
 METERSPHERE_WORKSPACE_ID="${METERSPHERE_WORKSPACE_ID:-}"
 METERSPHERE_VERSION="${METERSPHERE_VERSION:-}"
 METERSPHERE_HEADERS_JSON="${METERSPHERE_HEADERS_JSON:-}"
+METERSPHERE_TIMEOUT="${METERSPHERE_TIMEOUT:-60}"  # F5: 所有 curl 的统一超时（秒），可被环境变量覆盖
 METERSPHERE_PROTOCOLS_JSON="${METERSPHERE_PROTOCOLS_JSON:-[\"HTTP\"]}"
 
 [[ -n "${METERSPHERE_ORGANIZATION_LIST_PATH:-}" ]] || METERSPHERE_ORGANIZATION_LIST_PATH='/workspace/list/userworkspace'
@@ -73,7 +74,7 @@ detect_version() {
   need_base_url
   # v3 有 /system/version/current；v2 只有 /system/version
   local v3_status
-  v3_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "${METERSPHERE_BASE_URL%/}/system/version/current" 2>/dev/null || true)"
+  v3_status="$(curl -sS -o /dev/null -w '%{http_code}' --max-time "$METERSPHERE_TIMEOUT" "${METERSPHERE_BASE_URL%/}/system/version/current" 2>/dev/null || true)"
   if [[ "$v3_status" == "200" ]]; then
     echo "v3"
   else
@@ -192,17 +193,20 @@ request() {
   local url="${METERSPHERE_BASE_URL%/}/${prefix}${path}"
   local header_file
   header_file="$(mktemp)"
+  # F6: trap-based cleanup — header_file is removed on EVERY exit path (curl failure included)
+  trap 'rm -f "$header_file"' EXIT
   build_header_args "$header_file"
   local -a header_args=()
   while IFS= read -r line; do
     header_args+=("$line")
   done < "$header_file"
   if [[ -n "$body" ]]; then
-    curl -sS -X "$method" "$url" "${header_args[@]}" -d "$body"
+    curl -sS -X "$method" "$url" "${header_args[@]}" -d "$body" --max-time "$METERSPHERE_TIMEOUT"  # F5
   else
-    curl -sS -X "$method" "$url" "${header_args[@]}"
+    curl -sS -X "$method" "$url" "${header_args[@]}" --max-time "$METERSPHERE_TIMEOUT"  # F5
   fi
   rm -f "$header_file"
+  trap - EXIT  # F6: restore the caller's EXIT trap after successful cleanup
 }
 
 path_fill() {
@@ -273,7 +277,7 @@ usage() {
   cat <<'EOF'
 ms — MeterSphere CLI (v2 模式)
 
-本脚本面向 MeterSphere v2 分支（自动嗅探版本，或设 METERSPHERE_VERSION=v2 强制）。
+本脚本面向 MeterSphere v2 分支（可用 METERSPHERE_VERSION=v2 显式指定）。
 v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSize}。
 
 用法:
@@ -304,7 +308,14 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   list [关键词|JSON]
   get <id>
   create <JSON>
+  save <caseId> <JSON>  (comment: 用例评论写入)
+  delete <caseId> [评论ID|附件ID]  (comment/attachment/functional-case: 删除)
+  edit <caseId> <评论ID> <JSON>  (comment: 用例评论编辑)
+  generate <projectId> <moduleId> <templateId> <需求文件>  (functional-case: 本地生成草稿)
+  batch-create <JSON文件>  (functional-case: 批量写入)
   generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
+  upload <caseId> <文件>  (attachment: 附件上传)
+  download <caseId> <isLocal> <outfile>  (attachment: 附件下载)
   import-generate <projectId> <spec> [moduleId] (api: 导入 spec 生成定义+用例计划，不写入用例)
   import-create <projectId> <spec> [moduleId] (api: 导入 spec → 定义 → 用例，幂等去重)
   help
@@ -392,7 +403,8 @@ resource="$cmd"
 action="${1:-}"
 [[ -n "$action" ]] || die "缺少 action"
 shift || true
-IFS='|' read -r list_path get_path create_path <<< "$(resource_paths "$resource")"
+paths_out="$(resource_paths "$resource")" || exit 1  # F1: die in subshell only exits the subshell; parent must exit non-zero too
+IFS='|' read -r list_path get_path create_path <<< "$paths_out"
 service_prefix="$(service_prefix "$resource")"
 
 # 批量创建功能用例：读取 JSON 数组文件，逐元素 POST /track/test/case/add（multipart）。
@@ -486,6 +498,7 @@ PY
     signature="$(generate_signature)"
     local resp
     resp="$(curl -sS -X POST \
+    --max-time "$METERSPHERE_TIMEOUT" \  # F5
       -H "accessKey: $METERSPHERE_ACCESS_KEY" \
       -H "signature: $signature" \
       -F "request=@${tmp_json};type=application/json" \
@@ -659,6 +672,7 @@ PY
       signature="$(generate_signature)"
       local cresp
       cresp="$(curl -sS -X POST \
+      --max-time "$METERSPHERE_TIMEOUT" \  # F5
         -H "accessKey: $METERSPHERE_ACCESS_KEY" \
         -H "signature: $signature" \
         -F "request=@${tmp_json};type=application/json" \
@@ -718,6 +732,7 @@ PY
   printf '%s' "$import_body" > "$tmp_json"
   signature="$(generate_signature)"
   resp="$(curl -sS -X POST \
+  --max-time "$METERSPHERE_TIMEOUT" \  # F5
     -H "accessKey: ${METERSPHERE_ACCESS_KEY}" \
     -H "signature: ${signature}" \
     -F "file=@${spec_path};type=application/json" \
@@ -987,6 +1002,7 @@ PY
       printf '%s' "$line" > "$tmp_json"
       signature="$(generate_signature)"
       cresp="$(curl -sS -X POST \
+      --max-time "$METERSPHERE_TIMEOUT" \  # F5
         -H "accessKey: ${METERSPHERE_ACCESS_KEY}" \
         -H "signature: ${signature}" \
         -F "request=@${tmp_json};type=application/json" \
@@ -1096,11 +1112,13 @@ case "$action" in
   get)
     id="${1:-}"
     [[ -n "$id" ]] || die "get 需要 id"
+  [[ -n "$get_path" ]] || die "资源 $resource 的 GET 路径未配置（对应 METERSPHERE_*_GET_PATH 环境变量为空，拒绝猜测路径）"  # F2
     request GET "$(path_fill "$get_path" "$id")" "" "$service_prefix"
     ;;
   create)
     body="${1:-}"
     [[ -n "$body" ]] || die "create 需要 JSON body"
+  [[ -n "$create_path" ]] || die "资源 $resource 的创建路径未配置（对应 METERSPHERE_*_CREATE_PATH 环境变量为空，拒绝 POST 到服务根）"  # F4
     require_project_id
     body="$(normalize_json_with_defaults "$resource" "$body")"
     if [[ "$resource" == "case-review" ]]; then
@@ -1114,6 +1132,7 @@ case "$action" in
       need_keys
       signature="$(generate_signature)"
       curl -sS -X POST \
+      --max-time "$METERSPHERE_TIMEOUT" \  # F5
         -H "accessKey: $METERSPHERE_ACCESS_KEY" \
         -H "signature: $signature" \
         -F "request=@${tmp_json};type=application/json" \
@@ -1123,6 +1142,7 @@ case "$action" in
     ;;
   save)
     [[ "$resource" == "comment" ]] || die "save 仅支持 comment 资源"
+    require_project_id  # F3: 写入类动作必须显式设置 METERSPHERE_PROJECT_ID
     case_id="${1:-}"
     description="${2:-}"
     [[ -n "$case_id" ]] || die "comment save 需要 caseId"
@@ -1140,6 +1160,7 @@ PY
     [[ "$resp" != *'"success":false'* ]] || die "comment save 失败: $resp"
     ;;
   delete)
+    require_project_id  # F3: 写入类动作必须显式设置 METERSPHERE_PROJECT_ID
     if [[ "$resource" == "comment" ]]; then
       comment_id="${1:-}"
       [[ -n "$comment_id" ]] || die "comment delete 需要 commentId"
@@ -1165,6 +1186,7 @@ PY
     ;;
   edit)
     [[ "$resource" == "comment" ]] || die "edit 仅支持 comment 资源"
+    require_project_id  # F3: 写入类动作必须显式设置 METERSPHERE_PROJECT_ID
     comment_id="${1:-}"
     case_id="${2:-}"
     description="${3:-}"
@@ -1244,6 +1266,7 @@ PY
     need_keys
     signature="$(generate_signature)"
     resp="$(curl -sS -X POST \
+    --max-time "$METERSPHERE_TIMEOUT" \  # F5
       -H "accessKey: $METERSPHERE_ACCESS_KEY" \
       -H "signature: $signature" \
       -F "sourceId=$case_id" \
@@ -1263,15 +1286,19 @@ PY
     need_base_url
     need_keys
     signature="$(generate_signature)"
-    curl -sS -o "$outfile" -X GET \
+    # F7: write to a .part file first, verify, then move — a pre-existing outfile is
+    # never overwritten by a failed download and never deleted on a false positive.
+    part_file="${outfile}.part"
+    curl -sS -o "$part_file" -X GET --max-time "$METERSPHERE_TIMEOUT" \
       -H "accessKey: $METERSPHERE_ACCESS_KEY" \
       -H "signature: $signature" \
       "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_ATTACHMENT_DOWNLOAD_PATH}/${attachment_id}/${is_local}"
-    if grep -q '"success":false' "$outfile" 2>/dev/null; then
-      cat "$outfile" >&2
-      rm -f "$outfile"
-      die "attachment download 失败"
+    if grep -q '"success":false' "$part_file" 2>/dev/null; then
+      cat "$part_file" >&2
+      rm -f "$part_file"
+      die "attachment download 失败（原 $outfile 未被改动）"
     fi
+    mv -f "$part_file" "$outfile"
     bytes="$(wc -c < "$outfile")"
     echo "已下载 $bytes 字节到 $outfile"
     ;;
