@@ -342,6 +342,11 @@ def set_assertion(request_obj: dict, expected_code: str):
     return req
 
 
+# 接口定义 request 中承载参数的分组（扫描优先级）。`arguments` 是定义回读时
+# query/path 参数的实际存放字段，移除该项会使仅含该组参数的接口退化为「只有成功场景」。
+PARAM_GROUPS = ('query', 'rest', 'arguments')
+
+
 def build_case_variants_for_api(summary: str, req: dict, has_required: bool, has_params: bool):
     cases = []
     success_req = set_assertion(req, '200')
@@ -354,9 +359,9 @@ def build_case_variants_for_api(summary: str, req: dict, has_required: bool, has
     })
     if has_required:
         miss = copy.deepcopy(req)
-        for group in ['query', 'rest']:
-            for item in miss.get(group, []):
-                if item.get('required'):
+        for group in PARAM_GROUPS:
+            for item in miss.get(group) or []:
+                if isinstance(item, dict) and item.get('required'):
                     item['value'] = ''
                     break
         miss = set_assertion(miss, '400')
@@ -369,9 +374,9 @@ def build_case_variants_for_api(summary: str, req: dict, has_required: bool, has
         })
     if has_params:
         edge = copy.deepcopy(req)
-        for group in ['query', 'rest']:
-            for item in edge.get(group, []):
-                if item.get('paramType') == 'string':
+        for group in PARAM_GROUPS:
+            for item in edge.get(group) or []:
+                if isinstance(item, dict) and item.get('paramType') == 'string':
                     item['value'] = 'X' * 128
                     break
         edge = set_assertion(edge, '200')
@@ -411,8 +416,12 @@ def build_openapi_import(project_id: str, module_id: str, text: str):
                 'response': build_default_response(),
             }
             defs.append(definition)
-            has_required = any(x.get('required') for x in req.get('query', []) + req.get('rest', []))
-            has_params = bool(req.get('query') or req.get('rest'))
+            has_required = any(
+                isinstance(x, dict) and x.get('required')
+                for group in PARAM_GROUPS
+                for x in (req.get(group) or [])
+            )
+            has_params = any(req.get(group) for group in PARAM_GROUPS)
             cases.append(build_case_variants_for_api(summary, req, has_required, has_params))
     return {'definitions': defs, 'cases': cases}
 
