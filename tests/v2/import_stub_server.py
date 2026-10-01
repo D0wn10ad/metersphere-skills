@@ -18,8 +18,17 @@
   multipart/form-data，ms.sh L842-846 -F "request=@..."）；记录 case；
   返回 {"success":true,"data":{"id":"mock-<n>"}}（ms.sh L848-859 从 data 解析 case_id）。
 
-用法：python3 import_stub_server.py --state /tmp/opencode/import_stub_state.json [--port 18082]
+故障注入（--fail 文件，**每次请求现读**，故可中途切换；缺文件=不注入）：
+- testcase_list_500：testcase/list 回 500（既有，行为不得改）。
+- api_case_create_500：**仅** testcase/create 回 500，其余路由不受影响。
+- create_body_echo：testcase/create 回显收到的请求体；缺 id/priority 时回 400 + missing 字段清单。
+  正常注入仍回 200 并同样回显，便于断言"服务端到底看见了什么"。
+
+用法：python3 import_stub_server.py --state <state.json> [--port 18082] [--fail <fail.json>]
 健康检查：GET / → 200。收尾：kill 进程。
+
+注：默认 --fail 路径是历史手工流程留下的 /tmp/opencode/import_stub_fail.json，
+    仅作为向后兼容的默认值保留；自动化用例一律显式传入自己 tmp_path 下的文件。
 """
 import argparse
 import json
@@ -43,16 +52,32 @@ def save_state(path, state):
         json.dump(state, f, ensure_ascii=False, indent=2)
 
 
+LEGACY_FAIL_FILE = "/tmp/opencode/import_stub_fail.json"
+
+
 def fail_mode():
     try:
-        with open("/tmp/opencode/import_stub_fail.json", "r", encoding="utf-8") as f:
+        with open(StubHandler.fail_path, "r", encoding="utf-8") as f:
             return json.load(f).get("mode", "")
     except (FileNotFoundError, json.JSONDecodeError):
         return ""
 
 
+def extract_request_field(body):
+    """从 curl -F multipart 报文里取出 request= 字段的 JSON；取不到则按裸 JSON 兜底。"""
+    m = re.search(
+        r'name="request"[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n(.*?)\r\n--', body, re.S)
+    candidate = (m.group(1) if m else body).strip()
+    try:
+        parsed = json.loads(candidate)
+        return parsed if isinstance(parsed, dict) else {"_raw": candidate}
+    except json.JSONDecodeError:
+        return {"_raw": candidate}
+
+
 class StubHandler(BaseHTTPRequestHandler):
     state_path = "/tmp/opencode/import_stub_state.json"
+    fail_path = LEGACY_FAIL_FILE
 
     def log_message(self, fmt, *args):
         pass  # 静默，日志走 nohup 重定向
@@ -154,6 +179,32 @@ class StubHandler(BaseHTTPRequestHandler):
             return
         # POST /api/api/testcase/create（multipart 正则提取 apiDefinitionId/name）
         if self.path == "/api/api/testcase/create":
+            mode = fail_mode()
+            if mode == "api_case_create_500":
+                self._send(500, {"error": "injected failure: api_case_create_500"})
+                return
+            if mode == "create_body_echo":
+                received = extract_request_field(body)
+                missing = [f for f in ("id", "priority") if f not in received]
+                if missing:
+                    self._send(400, {
+                        "success": False,
+                        "message": "injected validation: create_body_echo",
+                        "missing": missing, "received": received})
+                    return
+                m_id = re.search(r'"apiDefinitionId"\s*:\s*"([^"]*)"', body)
+                api_def_id = m_id.group(1) if m_id else received.get("apiDefinitionId", "")
+                with LOCK:
+                    state = load_state(self.state_path)
+                    state["mock_counter"] += 1
+                    case_id = "mock-%d" % state["mock_counter"]
+                    state["cases"].append({
+                        "id": case_id, "name": received.get("name", ""),
+                        "apiDefinitionId": api_def_id})
+                    save_state(self.state_path, state)
+                self._send(200, {"success": True, "data": {"id": case_id},
+                                 "received": received})
+                return
             m_id = re.search(r'"apiDefinitionId"\s*:\s*"([^"]*)"', body)
             m_name = re.search(r'"name"\s*:\s*"([^"]*)"', body)
             api_def_id = m_id.group(1) if m_id else ""
@@ -175,12 +226,16 @@ def main():
     parser = argparse.ArgumentParser(description="MeterSphere import-create 幂等回归 stub")
     parser.add_argument("--state", default="/tmp/opencode/import_stub_state.json")
     parser.add_argument("--port", type=int, default=18082)
+    parser.add_argument("--fail", default=LEGACY_FAIL_FILE,
+                        help="故障注入 JSON 路径（缺文件=不注入）")
     args = parser.parse_args()
     StubHandler.state_path = args.state
+    StubHandler.fail_path = args.fail
     # 启动前确保状态文件存在（空映射起步，不预置——预置与 RED 断言 run1 EXIT0 自相矛盾）
     save_state(args.state, load_state(args.state))
     server = ThreadingHTTPServer(("127.0.0.1", args.port), StubHandler)
-    print("stub listening on 127.0.0.1:%d state=%s" % (args.port, args.state), flush=True)
+    print("stub listening on 127.0.0.1:%d state=%s fail=%s" % (
+        server.server_address[1], args.state, args.fail), flush=True)
     server.serve_forever()
 
 
