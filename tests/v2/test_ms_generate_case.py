@@ -45,7 +45,7 @@ def make_detail(name, request_obj, **overrides) -> dict:
     return detail
 
 
-def make_sampler(query=None, rest=None, headers=None, hash_tree=None) -> dict:
+def make_sampler(query=None, rest=None, headers=None, hash_tree=None, arguments=None) -> dict:
     """构造与真实 v2 MsHTTPSamplerProxy 同构的 request 元素。"""
     req = {
         'type': 'HTTPSamplerProxy',
@@ -60,7 +60,7 @@ def make_sampler(query=None, rest=None, headers=None, hash_tree=None) -> dict:
         'rest': rest or [],
         'headers': headers or [],
         'body': {'type': None, 'raw': None, 'format': None, 'kvs': [], 'binary': []},
-        'arguments': None,
+        'arguments': arguments,
         'authManager': {'authType': 'NONE', 'sslCertification': None},
         'domain': None,
         'protocol': 'HTTP',
@@ -169,6 +169,77 @@ def test_fixture_json_string_request_parses_and_generates():
     assert r1['rest'][0]['value'] == ''
     _, a1 = find_status_code_assertion(r1)
     assert a1['expression'] == '400'
+
+
+# ------------------------------------------------- 基线特征化（characterization）
+def test_fixture_arguments_is_empty_so_variant_count_baseline_is_two():
+    """特征化：已提交 fixture 的 arguments 为 []、无 query、rest[0].type 为 null
+    → 命中 rest 必填（必填缺失变体），但无 string 参数 → 无边界变体 → 共 2 个变体。
+
+    这是 arguments 扫描改动的行为基线：该 fixture 不含任何 arguments 参数，
+    因此修复前后都必须产出恰好 2 个变体（向后兼容证据）。
+    """
+    detail = load_live_detail()
+    request = json.loads(detail['request'])
+    assert request.get('arguments') == []
+    assert 'query' not in request
+    assert request['rest'][0]['type'] is None
+
+    variants = build_case_variants(detail)
+
+    assert len(variants) == 2
+    assert [v['name'] for v in variants] == ['Get book by id-成功场景', 'Get book by id-必填缺失']
+    assert [v['priority'] for v in variants] == ['P1', 'P1']
+
+
+# ------------------------------------------------- arguments 参数组扫描（G3）
+def test_arguments_only_params_produce_three_variants():
+    """仅在 arguments 组声明参数时，也必须命中必填缺失与边界扫描。
+
+    arguments 条目与 query 条目同构，因此必须与 query/rest 一同被扫描。
+    """
+    req = make_sampler(arguments=[
+        query_param('id', required=True, param_type='string'),
+        query_param('flag', required=False, param_type='boolean', value='true'),
+    ])
+    detail = make_detail('参数组接口', req)
+
+    variants = build_case_variants(detail)
+
+    assert len(variants) == 3
+    assert [v['name'] for v in variants] == [
+        '参数组接口-成功场景', '参数组接口-必填缺失', '参数组接口-边界场景',
+    ]
+    assert [v['priority'] for v in variants] == ['P1', 'P1', 'P2']
+
+    r1 = json.loads(variants[1]['request'])
+    assert r1['arguments'][0]['name'] == 'id'
+    assert r1['arguments'][0]['value'] == ''
+    _, a1 = find_status_code_assertion(r1)
+    assert a1['expression'] == '400'
+
+    r2 = json.loads(variants[2]['request'])
+    assert r2['arguments'][0]['name'] == 'id'
+    assert r2['arguments'][0]['value'] == 'x' * 128
+    _, a2 = find_status_code_assertion(r2)
+    assert a2['expression'] == '200'
+
+
+def test_query_takes_precedence_over_arguments_when_both_present():
+    req = make_sampler(
+        query=[query_param('qid', required=True, param_type='string')],
+        arguments=[query_param('aid', required=True, param_type='string', value='aid-default')],
+    )
+
+    variants = build_case_variants(make_detail('双参数组', req))
+
+    assert len(variants) == 3
+    r1 = json.loads(variants[1]['request'])
+    assert r1['query'][0]['value'] == ''
+    assert r1['arguments'][0]['value'] == 'aid-default'
+    r2 = json.loads(variants[2]['request'])
+    assert r2['query'][0]['value'] == 'x' * 128
+    assert r2['arguments'][0]['value'] == 'aid-default'
 
 
 # ---------------------------------------------------------------- (d)
