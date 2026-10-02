@@ -395,14 +395,18 @@ cd ~/.agents/skills/metersphere
 #### API 定义 → 接口用例（case factory）
 
 ```bash
-./scripts/v2/ms.sh api-case generate-create <projectId> [<definitionId>...]
+./scripts/v2/ms.sh api-case generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]
+
+# 例：给用户故事 T-story-123 与技术工单 T-tech-456 打标签，批量生成并写入
+./scripts/v2/ms.sh api-case generate-create --tags T-story-123,T-tech-456 <projectId> <definitionId1> <definitionId2>
 ```
 
-- 为**已存在**的 API 定义批量生成带断言的接口用例（每端点 3 个变体：`*成功场景`（断言 200，P1）/ `*必填缺失`（首个必填 query/rest 参数置空，断言 400，P1，仅当存在必填参数）/ `*边界场景`（首个字符串参数 = 128 个 'x'，断言 200，P2，仅当存在字符串参数）），填补 v2 导入只建定义不建用例（`caseTotal='0'`）的缺口。
+- 为**已存在**的 API 定义批量生成带断言的接口用例（每端点 3 个变体：`*成功场景`（断言 200，P1）/ `*必填缺失`（首个必填 query / rest / arguments 参数置空，断言 400，P1，仅当存在必填参数）/ `*边界场景`（首个字符串参数 = 128 个 'x'，断言 200，P2，仅当存在字符串参数）），填补 v2 导入只建定义不建用例（`caseTotal='0'`）的缺口。
 - 不传 definitionId = 项目内全部 HTTP 定义（自动分页拉取）；变体生成由 `skills/scripts/v2/ms_generate_case.py` 完成（纯本地，无网络）。
 - **服务端实测要求**（缺一即创建失败）：每条用例必须显式携带 `id`（uuid4，服务端不自动生成）、显式 `priority`、`request` 为嵌套对象（JSON 字符串会被 400 拒绝）——脚本已自动处理。
+- `--tags <标签[,标签...]>`（**可选，可重复**）：给每条生成的用例写入 `tags` 标签（典型用途是 Phabricator 工单号），值内可用逗号或空格分隔多个标签，脚本归一化去重后序列化成 **JSON 编码的字符串**（v2.10 的 `tags` 是 String 字段而非数组，裸数组会丢标签）；等价的重复写法 `--tags T-story-123 --tags T-tech-456`。**缺省时载荷里完全不含 `tags` 键**（连 `"[]"` 都不发）。必须在位置参数之前或之后皆可——脚本先剥离 `--tags` 再解析位置参数。
 - **不创建定义**（定义由导入或插件负责）；不执行用例；不添加 JSONPath 断言（仅状态码断言）。
-- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），当前变体扫描 `query`/`rest`——参数存于 `arguments` 或仅 body 必填的定义只会生成 `*成功场景`（后续版本扩展）。
+- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），`skills/scripts/v2/ms_generate_case.py` 的变体扫描按 `query` > `rest` > `arguments` 的优先级依次覆盖三组参数（`PARAM_GROUPS = ('query', 'rest', 'arguments')`，`arguments` 条目与 `query` 同构故一并扫描）。因此**只有 body、三个参数组都没有必填或字符串参数**的定义才会只生成 `*成功场景`，缺少必填缺失与边界覆盖，这类定义需交给 AI 增强步骤补偿。
 - 参数组命名对照（易混淆点）：`v1` 指 `skills/scripts/`（对接 MeterSphere v3.x），`v2` 指 `skills/scripts/v2/`（对接 MeterSphere v2.10 LTS），并非 MeterSphere 产品版本号。详见 §16。
 - 失败不中断：单条创建失败继续其余，汇总报告；仅当 0 条创建成功时退出非零。
 

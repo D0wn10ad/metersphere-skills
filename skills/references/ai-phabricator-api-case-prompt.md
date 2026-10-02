@@ -8,7 +8,7 @@
 2. 解析项目 ID：`./skills/scripts/v2/ms.sh project list '<workspaceId>'`（按 name 字段匹配项目名，0 个或多个匹配时告警）
 3. 解析模块 ID：`./skills/scripts/v2/ms.sh api-module list '<projectId>'`（按 name 匹配目标子模块名，0 个或多个匹配时告警）
 4. 枚举模块内接口定义：`./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>","protocols":["HTTP"]}'`
-5. 确定性批量生成：`./skills/scripts/v2/ms.sh api-case generate-create '<projectId>' <definitionId>...`（显式列出全部 definitionId）
+5. 确定性批量生成：`./skills/scripts/v2/ms.sh api-case generate-create --tags <标签[,标签...]> '<projectId>' <definitionId>...`（显式列出全部 definitionId）
 6. 对覆盖不足的定义，把 `./skills/scripts/v2/ms.sh api get <definitionId>` 的 JSON 贴给 AI，附上下面提示词，生成增强用例
 7. 将 AI 返回的 JSON 用 `./skills/scripts/v2/ms.sh api-case create '<json>'` 写入，一次一条
 
