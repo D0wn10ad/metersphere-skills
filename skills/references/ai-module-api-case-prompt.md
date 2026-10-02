@@ -7,7 +7,7 @@
 1. 解析项目 ID：`./skills/scripts/v2/ms.sh project list '<workspaceId>'`（v2 用工作空间，无组织概念；按 name 字段匹配项目名，0 个或多个匹配时告警）
 2. 解析模块 ID：`./skills/scripts/v2/ms.sh api-module list '<projectId>'`（遍历模块树 JSON，按 name 匹配子模块名，0 个或多个匹配时告警）
 3. 枚举模块内接口定义：`./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>","protocols":["HTTP"]}'`
-4. 确定性批量生成：`./skills/scripts/v2/ms.sh api-case generate-create '<projectId>' <definitionId>...`（显式列出全部 definitionId）
+4. 确定性批量生成：`./skills/scripts/v2/ms.sh api-case generate-create [--tags <标签[,标签...]>] '<projectId>' <definitionId>...`（显式列出全部 definitionId）
 5. 对覆盖不足的定义，把 `./skills/scripts/v2/ms.sh api get <definitionId>` 的 JSON 贴给 AI，附上下面提示词，生成增强用例
 6. 将 AI 返回的 JSON 用 `./skills/scripts/v2/ms.sh api-case create '<json>'` 写入，一次一条
 
@@ -33,14 +33,14 @@
 
 对已枚举出的每个接口定义，执行：
 
-`./skills/scripts/v2/ms.sh api-case generate-create '<projectId>' <definitionId1> <definitionId2> ...`
+`./skills/scripts/v2/ms.sh api-case generate-create [--tags <标签[,标签...]>] '<projectId>' <definitionId1> <definitionId2> ...`
 
 - 必须把目标模块的**全部 definitionId 显式列出**，不要省略。省略 definitionId 会对整个项目生成用例，超出目标模块范围。
 - 每个定义生成 3 个变体：
   - `*成功场景`：断言 200，优先级 P1
-  - `*必填缺失`：首个必填 query/rest 参数置空，断言 400，优先级 P1（仅当存在必填参数）
+  - `*必填缺失`：首个必填 query / rest / arguments 参数置空，断言 400，优先级 P1（仅当存在必填参数）
   - `*边界场景`：首个字符串参数 = 128 个 'x'，断言 200，优先级 P2（仅当存在字符串参数）
-- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），变体扫描 `query` / `rest`。因此参数存于 `arguments` 或仅 body 必填的定义只会生成 `*成功场景`，缺少必填缺失与边界覆盖，这类定义必须交给下面的 AI 增强步骤补偿。
+- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），`skills/scripts/v2/ms_generate_case.py` 的变体扫描按 `query` > `rest` > `arguments` 的优先级依次覆盖三组参数。因此**只有纯 body 必填、三个参数组都没有必填或字符串参数**的定义才会只生成 `*成功场景`，缺少必填缺失与边界覆盖，这类定义必须交给下面的 AI 增强步骤补偿。
 
 **AI 增强变体（逐条创建）**
 
@@ -68,9 +68,9 @@
 
 - 输出必须是**原始 JSON**，不要 markdown 代码块围栏（不要 json 围栏），不要解释性文字，确保可直接被 `python3 -m json.tool` 解析。
 - 用例名称用中文，风格为测试人员写法（如 `获取用户详情-200`）。
-- 创建体只包含 `name` / `projectId` / `apiDefinitionId` / `priority`（可选 `description` / `tags` / `versionId`），不要输出服务端自动生成的字段（`id`、`num`、`createTime`、`createUser`、`caseStatus` 等）。
+- 创建体需包含 `name` / `id` / `projectId` / `apiDefinitionId` / `priority`（可选 `description` / `tags` / `versionId`）。注意：v2.10 路径中 `id` 必须由客户端提供（uuid4），因为服务端 `createTest()` 只做 `test.setId(request.getId())`，不会自动生成 id，缺省会落库失败（实测报 `Column 'id' cannot be null`）；走 v3.x（`./skills/scripts/`）时服务端会用 `IDGenerator` 生成 id，可以不传。不要输出服务端写入的字段（`num`、`createTime`、`createUser`、`caseStatus` 等）。
 
-## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考，创建体只需 name/projectId/apiDefinitionId/priority）
+## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考，创建体需 name/id/projectId/apiDefinitionId/priority）
 
 ```json
 {
@@ -101,6 +101,7 @@
 
 ```json
 {
+  "id": "<uuid4>",
   "name": "获取用户详情-200",
   "projectId": "<projectId>",
   "apiDefinitionId": "<apiDefinitionId>",
