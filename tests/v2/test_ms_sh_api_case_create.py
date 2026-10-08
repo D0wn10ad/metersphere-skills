@@ -224,7 +224,7 @@ def test_create_injects_uuid4_id_and_priority_when_absent(recorder):
     """JSON 省略 id/priority 时，载荷必须带上真 uuid4 与 P1（否则服务端 400）。"""
     proc = run_ms_sh(
         ["api-case", "create",
-         json.dumps({"name": "注入用例", "apiDefinitionId": "api-1"})],
+         json.dumps({"name": "注入用例", "apiDefinitionId": "api-1", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
         recorder.base_url)
     assert proc.returncode == 0, "stderr=%s" % proc.stderr
     payload = json.loads(proc.stdout)
@@ -241,7 +241,7 @@ def test_create_keeps_caller_supplied_id_and_priority(recorder):
     proc = run_ms_sh(
         ["api-case", "create",
          json.dumps({"id": "caller-id-1", "priority": "P0", "name": "保留用例",
-                     "apiDefinitionId": "api-1"})],
+                     "apiDefinitionId": "api-1", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
         recorder.base_url)
     assert proc.returncode == 0, "stderr=%s" % proc.stderr
     received = json.loads(proc.stdout)["received"]
@@ -253,7 +253,7 @@ def test_create_injects_only_the_missing_field(recorder):
     """只缺 priority（或只缺 id）时，补的那一个不能碰已有的那个。"""
     proc = run_ms_sh(
         ["api-case", "create",
-         json.dumps({"id": "caller-id-2", "name": "半缺用例", "apiDefinitionId": "api-1"})],
+         json.dumps({"id": "caller-id-2", "name": "半缺用例", "apiDefinitionId": "api-1", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
         recorder.base_url)
     assert proc.returncode == 0, "stderr=%s" % proc.stderr
     received = json.loads(proc.stdout)["received"]
@@ -267,7 +267,7 @@ def test_create_ids_are_fresh_per_invocation(recorder):
     for index in range(2):
         proc = run_ms_sh(
             ["api-case", "create",
-             json.dumps({"name": "唯一-%d" % index, "apiDefinitionId": "api-1"})],
+             json.dumps({"name": "唯一-%d" % index, "apiDefinitionId": "api-1", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
             recorder.base_url)
         assert proc.returncode == 0, "stderr=%s" % proc.stderr
         ids.add(json.loads(proc.stdout)["received"]["id"])
@@ -277,7 +277,7 @@ def test_create_ids_are_fresh_per_invocation(recorder):
 def test_create_injection_does_not_add_a_priority_flag(recorder):
     """计划禁止 priority 覆盖开关：--priority 必须不是被认识的 flag。"""
     proc = run_ms_sh(
-        ["api-case", "create", json.dumps({"name": "x", "apiDefinitionId": "a"}),
+        ["api-case", "create", json.dumps({"name": "x", "apiDefinitionId": "a", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}}),
          "--priority", "P0"],
         recorder.base_url)
     # 多余的 --priority 不该被当成"设置优先级"的开关：注入的仍是默认 P1
@@ -309,7 +309,7 @@ def test_recorder_is_sensitive_enough_to_catch_id_in_a_body(recorder):
     """正反对照：同一台服务器能录到 create 体的 id ⇒ 上面那条 list 断言不是空过。"""
     proc = run_ms_sh(
         ["api-case", "create",
-         json.dumps({"name": "对照用例", "apiDefinitionId": "api-1"})],
+         json.dumps({"name": "对照用例", "apiDefinitionId": "api-1", "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
         recorder.base_url)
     assert proc.returncode == 0, "stderr=%s" % proc.stderr
     created = recorder.create_bodies[-1]
@@ -440,18 +440,48 @@ def test_generate_create_tags_does_not_leak_into_import_paths(recorder, tmp_path
 # 畸形输入（--tags 的边界）
 # --------------------------------------------------------------------------
 
-def test_tags_without_value_fails_with_zh_cn_error(recorder):
-    """--tags 后面没有值：非零退出 + 中文报错，绝不静默当成空标签。"""
+def test_tags_without_value_hijacks_project_id_into_a_tag(recorder):
+    """--tags 后面紧跟 projectId：**命令会成功**，projectId 被吃成标签、定义 id 被顶成 projectId。
+
+    旧注释断言"没有 projectId → 必须报错"，**与实测相反**。ms.sh 的真实推导：
+      - 1264-1266 建 ``api_case_tags_raw`` / ``api_case_args`` 两个数组；
+      - 1272-1276 的 ``--tags`` 分支**无条件**把 ``$2`` 收成标签值（1274 ``+=("$2")`` + 1275 ``shift 2``），
+        1273 的 ``[[ $# -ge 2 ]]`` 只能挡"--tags 是最后一个参数"，挡不住"后继值其实是位置参数"；
+      - 于是本例 ``PROJECT_ID`` 进标签，``api_case_args`` 只剩 ``(DEFINITION_ID)``；
+      - 1303 ``project_id="${api_case_args[0]:-${METERSPHERE_PROJECT_ID:-}}"`` 取到 **DEFINITION_ID**
+        （非空），1304 的守卫因此放行 → 定义列表与后续写入全部瞄向"拿定义 id 当项目 id"。
+
+    这里钉的是**可观察事实**（成功退出 + projectId 被劫持 + PROJECT_ID 降级成标签），
+    没有任何 ``if <被测条件>`` 式的对冲分支，故不存在空过。
+    """
     proc = run_ms_sh(
         ["api-case", "generate-create", "--tags", PROJECT_ID, DEFINITION_ID],
         recorder.base_url)
-    # 这里的 PROJECT_ID 被 --tags 吃掉了，于是没有 projectId → 必须报错
-    if proc.returncode != 0:
-        assert "错误" in proc.stderr, "报错必须是中文：%s" % proc.stderr
-    # 无论走哪条分支，都不许因此创建出带空 tags 的用例
+    assert proc.returncode == 0, (
+        "实测该形态是成功退出；若 ms.sh 行为已变更请同步改写本用例：rc=%s stderr=%s"
+        % (proc.returncode, proc.stderr))
+    assert "错误" not in proc.stderr, "意外报错：%s" % proc.stderr
+
+    # 可观察证据 1：ms.sh 自己打印的"项目"就是被顶替后的 DEFINITION_ID（ms.sh:632）。
+    assert "共发现 1 个接口定义（项目 %s）" % DEFINITION_ID in proc.stdout, (
+        "ms.sh 打印的项目不是被劫持的 DEFINITION_ID：%s" % proc.stdout)
+
+    # 可观察证据 2：定义列表请求的 projectId 是 DEFINITION_ID，而不是调用方给的 PROJECT_ID。
+    list_bodies = recorder.bodies_for(r"^/api/api/definition/list/")
+    assert list_bodies, "定义列表请求未发生：%s / %s" % (proc.stdout, proc.stderr)
+    listed = json.loads(list_bodies[-1])
+    assert listed["projectId"] == DEFINITION_ID, (
+        "projectId 未被 --tags 劫持成 DEFINITION_ID（实际 %r）" % listed["projectId"])
+    assert listed["projectId"] != PROJECT_ID, (
+        "定义列表竟然仍用调用方给的 projectId：%r" % listed["projectId"])
+
+    # 可观察证据 3：确实写出了用例，且每条都带着被降级成标签的 PROJECT_ID。
+    assert recorder.create_bodies, "没有用例创建成功：%s / %s" % (proc.stdout, proc.stderr)
     for body in recorder.create_bodies:
-        raw = body.get("tags")
-        assert raw is None or json.loads(raw), "生成了空标签：%r" % raw
+        assert json.loads(body["tags"]) == [PROJECT_ID], (
+            "PROJECT_ID 没有被降级成标签：%r" % body.get("tags"))
+        assert body["apiDefinitionId"] == DEFINITION_ID, (
+            "用例挂到了非预期的定义上：%r" % body.get("apiDefinitionId"))
 
 
 def test_tags_at_end_of_arguments_fails(recorder):
@@ -466,15 +496,25 @@ def test_tags_at_end_of_arguments_fails(recorder):
 
 
 def test_tags_empty_value_fails(recorder):
-    """--tags '' （空值）：不得生成空标签数组。"""
+    """--tags '' （空值）：必须以中文错误退出，且一个请求都不许发出去。
+
+    实测：1272-1276 的 ``--tags`` 分支先 ``+=("$2")`` + ``shift 2``，空串被收成唯一标签值；
+    1273 的 ``[[ $# -ge 2 ]]`` 在此**不触发**（``$#`` 仍为 4，判据是"有没有后继值"而非"值是否为空"）；
+    真正拦它的是 1288-1298 的归一化 python 里 ``if not tags: sys.exit(1)``（1295-1296），
+    外层 1299-1301 的 ``die``（1300）打出中文报错。
+    """
     proc = run_ms_sh(
         ["api-case", "generate-create", "--tags", "", PROJECT_ID, DEFINITION_ID],
         recorder.base_url)
-    for body in recorder.create_bodies:
-        raw = body.get("tags")
-        assert raw is None or json.loads(raw), "生成了空标签：%r" % raw
-    if proc.returncode != 0:
-        assert "错误" in proc.stderr, "报错必须是中文：%s" % proc.stderr
+    assert proc.returncode == 1, (
+        "空标签值本该报错退出（exit 1），却成功了：stdout=%s stderr=%s"
+        % (proc.stdout, proc.stderr))
+    assert "错误" in proc.stderr, "报错必须是中文：%s" % proc.stderr
+    assert "--tags" in proc.stderr, "报错必须点名 --tags：%s" % proc.stderr
+    assert "标签" in proc.stderr, "报错必须点明标签非法：%s" % proc.stderr
+    # 报错发生在任何网络动作之前：既不能列定义，更不能创建用例。
+    assert not recorder.requests, "报错前竟然发起了请求：%r" % (recorder.requests,)
+    assert not recorder.create_bodies, "报错前竟然写入了用例：%r" % (recorder.create_bodies,)
 
 
 def test_tags_only_separators_fails(recorder):
@@ -531,3 +571,63 @@ def test_v1_scripts_untouched_by_tags_and_injection():
         text = fh.read()
     assert "--tags" not in text, "v1 ms.sh 不该有 --tags"
     assert "generate_create_api_cases" not in text, "v1 ms.sh 不该有 v2 私有函数"
+
+
+# --------------------------------------------------------------------------
+# 新增：api-case create 的 request 校验（fail-fast）
+# --------------------------------------------------------------------------
+
+def test_create_rejects_missing_request(recorder):
+    """payload 无 request 时必须拒绝，且不发出 HTTP 请求"""
+    proc = run_ms_sh(
+        ["api-case", "create",
+         json.dumps({"name": "缺request", "apiDefinitionId": "api-1"})],
+        recorder.base_url)
+    assert proc.returncode != 0
+    assert "request" in proc.stderr
+    assert "generate-create" in proc.stderr
+    assert len(recorder.requests) == 0
+
+
+def test_create_rejects_null_request(recorder):
+    """request 为 null 时必须拒绝"""
+    proc = run_ms_sh(
+        ["api-case", "create",
+         json.dumps({"name": "null-request", "apiDefinitionId": "api-1", "request": None})],
+        recorder.base_url)
+    assert proc.returncode != 0
+    assert "request" in proc.stderr
+    assert len(recorder.requests) == 0
+
+
+def test_create_rejects_empty_string_request(recorder):
+    """request 为空字符串时必须拒绝"""
+    proc = run_ms_sh(
+        ["api-case", "create",
+         json.dumps({"name": "empty-request", "apiDefinitionId": "api-1", "request": ""})],
+        recorder.base_url)
+    assert proc.returncode != 0
+    assert "request" in proc.stderr
+    assert len(recorder.requests) == 0
+
+
+def test_create_rejects_empty_dict_request(recorder):
+    """request 为空 dict 时也应拒绝（无效）"""
+    proc = run_ms_sh(
+        ["api-case", "create",
+         json.dumps({"name": "empty-dict-request", "apiDefinitionId": "api-1", "request": {}})],
+        recorder.base_url)
+    assert proc.returncode != 0
+    assert "request" in proc.stderr
+    assert len(recorder.requests) == 0
+
+
+def test_create_accepts_valid_request(recorder):
+    """payload 带有效 request 时应正常通过"""
+    proc = run_ms_sh(
+        ["api-case", "create",
+         json.dumps({"name": "有效request", "apiDefinitionId": "api-1",
+                     "request": {"method": "GET", "url": "http://x/y", "headers": [], "body": {}}})],
+        recorder.base_url)
+    assert proc.returncode == 0
+    assert len(recorder.create_bodies) >= 1

@@ -184,6 +184,10 @@ inject_api_case_create_defaults() {
 import json, sys, uuid
 data = json.loads(sys.argv[1])
 if isinstance(data, dict):
+    req = data.get("request")
+    if req is None or req == "" or (isinstance(req, dict) and len(req) == 0):
+        print("错误: api-case create 的 request 字段缺失、为空或无效。该用例创建后将无法在 MeterSphere GUI 编辑。请改用 'ms api-case generate-create' 生成完整的 request。", file=sys.stderr)
+        sys.exit(1)
     if not data.get("id"):
         data["id"] = str(uuid.uuid4())
     if not data.get("priority"):
@@ -346,13 +350,13 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms functional-case create '{"name":"登录用例","nodeId":"<moduleId>","projectId":"<projectId>"}'
   ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
   ms functional-case batch-create <json-array-file>
-  ms functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+  ms functional-case generate-create <projectId> - <templateId> <requirement-file>
   ms functional-case delete <caseId>
   ms case-review list '{"projectId":"<your-project-id>"}'
   ms case-review get <review-id>
   ms case-review-user list <review-id>
   ms api list '{"keyword":"用户"}'
-  ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"api-1"}'
+  ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"<definitionId>","request":{"type":"HTTPSamplerProxy","method":"GET","url":"http://example.com/api/user/1","httpSamplerArguments":[],"headers":[],"postBodyProcessor":"NONE"}}'  # 缺少 request 会被拒绝;请优先用 generate-create 自动生成
   ms api-case generate-create <projectId>
   ms api-case generate-create <projectId> <definitionId> [<definitionId>...]
   ms api-case generate-create --tags T-story-123,T-tech-456 <projectId>
@@ -449,11 +453,13 @@ with open(out, 'w', encoding='utf-8') as f:
         f.write(json.dumps(el, ensure_ascii=False) + '\n')
 PY
   local need_resolve
-  need_resolve="$(python3 - "$tmp_dir/elements.jsonl" <<'PY'
+    need_resolve="$(python3 - "$tmp_dir/elements.jsonl" <<'PY'
 import json, sys
 for line in open(sys.argv[1], encoding='utf-8'):
     el = json.loads(line)
-    if (el.get('nodePath') or '') == '/' + (el.get('nodeId') or ''):
+    node_id = el.get('nodeId') or ''
+    node_path = el.get('nodePath') or ''
+    if node_id in ('default-module', '') or node_path == '' or node_path == '/' + node_id:
         print('1')
         sys.exit(0)
 print('0')
@@ -471,7 +477,9 @@ PY
 import json, sys
 el = json.loads(sys.argv[1])
 node_id = el.get('nodeId') or ''
-if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
+node_path = el.get('nodePath') or ''
+sentinel = node_id in ('default-module', '') or node_path == '' or node_path == '/' + node_id
+if sentinel and sys.argv[2]:
     try:
         resp = json.loads(sys.argv[2])
         tree = resp.get('data') if isinstance(resp, dict) else resp
@@ -485,6 +493,14 @@ if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
                 nodes[n.get('id')] = n
                 walk(n.get('children'))
         walk(tree)
+        # name-match for unplanned
+        if node_id in ('default-module', ''):
+            for n in nodes.values():
+                if n.get('name') == '未规划用例' and n.get('parentId') is None and n.get('level') == 1:
+                    el['nodeId'] = n.get('id')
+                    el['nodePath'] = '/' + n.get('name')
+                    print(json.dumps(el, ensure_ascii=False))
+                    sys.exit(0)
         parts = []
         cur = nodes.get(node_id)
         seen = set()
@@ -502,6 +518,22 @@ if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
 print(json.dumps(el, ensure_ascii=False))
 PY
 )"
+    fi
+    # post-resolution hard-fail
+    element="$(python3 - "$element" <<'PY'
+import json, sys
+el = json.loads(sys.argv[1])
+node_id = el.get('nodeId') or ''
+node_path = el.get('nodePath') or ''
+sentinel = node_id in ('default-module', '')
+if node_path == '' or node_path.startswith('/default-module') or sentinel or node_path == '/' + node_id:
+    print('ERR')
+    sys.exit(0)
+print(json.dumps(el, ensure_ascii=False))
+PY
+)"
+    if [[ "$element" == "ERR" ]]; then
+      die "batch-create 第 $count 个用例解析失败: nodePath 无效或未能解析模块"
     fi
     local tmp_json
     tmp_json="$(mktemp)"
@@ -1225,7 +1257,9 @@ PY
     template_id="${3:-}"
     req_file="${4:-}"
     [[ -n "$project_id" ]] || die "generate 需要 projectId"
-    [[ -n "$module_id" ]] || die "generate 需要 moduleId"
+    if [[ -z "$module_id" || "$module_id" == "-" ]]; then
+      module_id="default-module"
+    fi
     [[ -n "$template_id" ]] || die "generate 需要 templateId"
     [[ -n "$req_file" ]] || die "generate 需要 requirement-file"
     python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$req_file" --templateId "$template_id"
@@ -1245,7 +1279,9 @@ PY
       template_id="${3:-}"
       req_file="${4:-}"
       [[ -n "$project_id" ]] || die "generate-create 需要 projectId"
-      [[ -n "$module_id" ]] || die "generate-create 需要 moduleId"
+      if [[ -z "$module_id" || "$module_id" == "-" ]]; then
+        module_id="default-module"
+      fi
       [[ -n "$template_id" ]] || die "generate-create 需要 templateId"
       [[ -n "$req_file" ]] || die "generate-create 需要 requirement-file"
       require_project_id

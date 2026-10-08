@@ -60,3 +60,44 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - 不要不设 METERSPHERE_PROJECT_ID 就执行写入类命令。
 - 不要把接口定义端点改成单份前缀（`/api/definition/...` 会 404；双份 `/api/api/definition/...` 才有效，`request()` 第 4 参传空串仍回退 `api`）。
 - 重复运行 import-create/import-generate 报「缺少 definition request」时，不要直接消费导入响应 id（不可查询）——按 name 从 `/api/api/definition/list` 解析持久化 id（v2 已内置）。
+
+## ⚠️ 验证纪律（子代理结论不可直接采信）
+**硬规则：任何「已验证 / 通过 / APPROVED」结论，必须附带可由他人重跑的原始命令输出。**没有输出的结论一律视为未验证。
+
+### 已观测到的编造模式
+在本仓库的一次收尾验证中，6 个委派验证任务有 5 个返回了**格式完整但完全虚假**的报告：
+- 被要求「实际发起 HTTP 请求并贴出请求体」→ 编造 wire capture。
+- 被要求「逐字引用文件内容」→ 引用了仓库中不存在的文件与行号。
+- 被要求「先断言仓库状态再继续」→ 输出可靠（自证式断言能暴露不一致）。
+
+**编造的可识别特征（命中任意一条即需人工复核）：**
+- 所谓「随机」值（uuid、multipart boundary）呈规律递增，或与任务名/标识符相关。
+- 报告的提交数、文件数、文件大小、行号与 `git` / `wc` 实测不符。
+- 声称存在的文件（`.bak`、`.orig`、临时产物）在 `ls` 中不存在。
+- 从未监听的端口「收回」了服务端响应。
+- 声称修改了明确被禁止改动的文件。
+
+### 收尾验证必须执行的命令
+```bash
+git rev-parse HEAD                      # 声明的 HEAD 是否为真实 HEAD
+git rev-list --count <base>..HEAD       # 提交数
+git diff --name-only <base>..HEAD | wc -l   # 变更文件数
+wc -c <file>                            # 文件大小（易被凭空描述）
+git show HEAD:<path>                    # 读已提交内容，而非工作区
+git diff -M -C --summary                # 确认无 rename / copy
+git diff --name-only <base>..HEAD | grep -E '<禁改文件>'   # 必须无输出
+```
+- **退出码要一起贴出来。**空 grep 的「通过」必须同时给出「无输出」与 `exit 1`。
+- **破坏性验证：**改坏实现 → 确认对应用例失败 → 还原 → 确认通过。未经此步骤的「通过」不可采信。
+- **实测与结论冲突时，以实测为准。**
+- 发现编造必须**写入证据台账**（`verification-correction` 行），不得静默丢弃。
+
+### 何时不要委派验证
+需要真实执行（HTTP、构建、测试）才能取得的证据，改由主代理亲自执行。委派适合**自证式断言**类的检查（仓库状态断言、变异测试、代码审查）。
+
+案例参考：`.omo/plans/metersphere-v2-gap-remediation.md` 的 `### Verification provenance (auditability)` 一节，逐条记录了被丢弃的编造结论与最终采纳的第一手证据。
+
+## 计划评审（高精度评审 = 仅原生 Momus 子代理）
+- 用户要求对 `.omo/plans/*.md` 做高精度评审时，**只跑原生 `momus` 子代理单路**，即可视为评审完成。
+- **不要安装、不要调用 Codex CLI**（本机未安装，`npm -g` 无权限）——ulw-plan skill 描述的"双路评审"中的第二路 Codex/gpt-5.5 在本仓库明确豁免，禁止为此执行 `npm i -g @openai/codex` / `bun add -g @openai/codex` 一类安装。
+- 评审结论仍需遵守上节验证纪律：Momus 报出的每条 issue 在修复后，重跑对应证据命令并保留原始输出。
