@@ -17,23 +17,24 @@
 目标：
 
 1. 输出必须是**单个 JSON 对象**（一条接口用例），字段语义对齐 v2 `/api/testcase/create`：
-   - `name`（用例标题，如 `获取用户详情-200`）
-   - `projectId`（项目 ID，从接口定义中取，不要编造）
-   - `apiDefinitionId`（接口定义 ID，从接口定义中取，不要编造）
-   - `priority`（优先级，取值只能是 `P0` / `P1` / `P2` / `P3`）
-   - 可选：`description`（用例描述）、`tags`（标签数组）、`versionId`（仅当已知时提供）
-2. 不要输出服务端自动生成的字段（`id`、`num`、`createTime`、`createUser`、`caseStatus` 等）——创建时由服务端填充。
-3. 基于接口定义生成用例，优先覆盖：
+   - **必填**：`name`（用例标题，如 `获取用户详情-200`）、`projectId`（项目 ID，从接口定义中取，不要编造）、`apiDefinitionId`（接口定义 ID，从接口定义中取，不要编造）、`priority`（优先级，取值只能是 `P0` / `P1` / `P2` / `P3`）、`id`（uuid4，见下一条）
+   - 可选：`description`（用例描述）、`tags`（标签，见「标签字段」一节）、`versionId`（仅当已知时提供）
+2. `id` **必须由你（客户端）提供**，取一个 uuid4。MeterSphere v2.10 的 `ApiTestCaseService.createTest()` 只做 `test.setId(request.getId())`，该文件里没有任何 `IDGenerator` 调用，服务端不会替你生成 id；缺 `id` 会落库失败（实测报 `Column 'id' cannot be null`）。`priority` 同理（`test.setPriority(request.getPriority())`，缺省报 `Column 'priority' cannot be null`）。
+   - **版本差异**：MeterSphere v3.x 的 `ApiTestCaseService.addCase()` 在服务端 `testCase.setId(IDGenerator.nextStr())` 生成 id，所以走 `./skills/scripts/`（对接 v3.x）写入时可以不传 `id`；本模板面向 v2.10（`./skills/scripts/v2/`），必须传。
+3. 不要输出由服务端写入的字段：`num`（`createTest()` 内部 `getNextNum(...)` 生成）、`createTime` / `createUser`（服务端按当前用户与当前时间填充）；`caseStatus` 可省略，服务端缺省填 `Underway`。
+4. **标签字段 `tags`（可选）**：`tags` 是**可选**字段，要打标签时它的值必须是 **JSON 编码的字符串**，不是 JSON 数组。正确载荷是 `"tags": "[\"T-story-123\",\"T-tech-456\"]"`——最外层是一个被引号包裹的字符串，其内容本身才是 JSON 数组。写成裸数组 `"tags": ["T-story-123","T-tech-456"]` 会丢失标签。原因（MeterSphere v2.10 源码）：`SaveApiTestCaseRequest extends ApiTestCase`，实体字段是 `private String tags`；`ApiTestCaseService.createTest()` 以 `StringUtils.equals("[]", request.getTags())` 判断后原样存入。
+   - 不打标签就整体省略该键（合法）；写 `"tags": "[]"` 也合法，服务端会把它归一化为空串。
+5. 基于接口定义生成用例，优先覆盖：
    - 成功场景（200）
    - 必填参数缺失
    - 非法类型 / 非法取值
    - 超长 / 边界值
    - 资源不存在
    - 权限不足（如果接口语义明显涉及权限）
-4. 用例名称用中文，风格为测试人员写法。
-5. 输出必须是**原始 JSON**，不要 markdown 代码块围栏（不要 ```json ... ```），不要解释性文字，确保可直接被 `python3 -m json.tool` 解析。
+6. 用例名称用中文，风格为测试人员写法。
+7. 输出必须是**原始 JSON**，不要 markdown 代码块围栏（不要 ```json ... ```），不要解释性文字，确保可直接被 `python3 -m json.tool` 解析。
 
-## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考，创建体只需 name/projectId/apiDefinitionId/priority）
+## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考，创建体只需 name/id/projectId/apiDefinitionId/priority）
 
 ```json
 {
@@ -64,6 +65,7 @@
 
 ```json
 {
+  "id": "<uuid4>",
   "name": "获取用户详情-200",
   "projectId": "184896ef-073c-11f1-9f0a-0242ac1e0a08",
   "apiDefinitionId": "4b89bc21-214d-4c11-9acf-0bfc127e7b99",
@@ -71,3 +73,6 @@
   "description": "验证使用有效用户 ID 获取用户详情的成功场景"
 }
 ```
+
+- `id` 是必填的客户端生成 uuid4（v2.10 服务端不生成，见「目标」第 2 条），可用 `python3 -c 'import uuid; print(uuid.uuid4())'` 现场生成。
+- `tags` 在这个示例里整体省略了（合法）。要打标签就加上 `"tags": "[\"T-story-123\",\"T-tech-456\"]"`——注意是 JSON 编码的**字符串**，不是裸数组。

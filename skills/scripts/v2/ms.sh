@@ -21,6 +21,9 @@ METERSPHERE_WORKSPACE_ID="${METERSPHERE_WORKSPACE_ID:-}"
 METERSPHERE_VERSION="${METERSPHERE_VERSION:-}"
 METERSPHERE_HEADERS_JSON="${METERSPHERE_HEADERS_JSON:-}"
 METERSPHERE_PROTOCOLS_JSON="${METERSPHERE_PROTOCOLS_JSON:-[\"HTTP\"]}"
+# api-case generate-create 的 --tags 专用：JSON 编码后的标签数组字符串（如 ["T-story-123"]），
+# 未指定 --tags 时保持空 → 载荷整个省略 tags 键。刻意不给环境变量兜底（标签是调用时显式意图）。
+API_CASE_TAGS_JSON=""
 
 [[ -n "${METERSPHERE_ORGANIZATION_LIST_PATH:-}" ]] || METERSPHERE_ORGANIZATION_LIST_PATH='/workspace/list/userworkspace'
 [[ -n "${METERSPHERE_PROJECT_LIST_PATH:-}" ]] || METERSPHERE_PROJECT_LIST_PATH='/project/list/related'
@@ -169,6 +172,30 @@ print(json.dumps(data, ensure_ascii=False))
 PY
 }
 
+# api-case create 的缺省补齐：只在缺省时注入 id（uuid4）与 priority（P1）。
+# 服务端依据：v2.10 ApiTestCaseService.createTest() 只做 test.setId(request.getId()) /
+# test.setPriority(request.getPriority())，该类零 IDGenerator 调用 → 服务端不再兜底，
+# 缺 id 落库即报 Column 'id' cannot be null（服务端 error.log 实测）。
+# 刻意做成独立函数而非并入 normalize_json_with_defaults：后者还有 list 分支的调用点，
+# 在那里注入会把 id/priority 泄进查询体，被服务端当过滤条件而静默筛掉结果。
+inject_api_case_create_defaults() {
+  local body="$1"
+  python3 - "$body" <<'PY'
+import json, sys, uuid
+data = json.loads(sys.argv[1])
+if isinstance(data, dict):
+    req = data.get("request")
+    if req is None or req == "" or (isinstance(req, dict) and len(req) == 0):
+        print("错误: api-case create 的 request 字段缺失、为空或无效。该用例创建后将无法在 MeterSphere GUI 编辑。请改用 'ms api-case generate-create' 生成完整的 request。", file=sys.stderr)
+        sys.exit(1)
+    if not data.get("id"):
+        data["id"] = str(uuid.uuid4())
+    if not data.get("priority"):
+        data["priority"] = "P1"
+print(json.dumps(data, ensure_ascii=False))
+PY
+}
+
 service_prefix() {
   # v2 网关 discovery locator：/{serviceId}/** 剥掉首段 serviceId 后转发到对应微服务。
   # track：功能模块/功能用例/评审系；project：功能模板；其余（含 raw）走 api。
@@ -305,6 +332,7 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   get <id>
   create <JSON>
   generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
+  generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]  (api-case: 额外写入 phabricator 标签，--tags 可重复)
   import-generate <projectId> <spec> [moduleId] (api: 导入 spec 生成定义+用例计划，不写入用例)
   import-create <projectId> <spec> [moduleId] (api: 导入 spec → 定义 → 用例，幂等去重)
   help
@@ -322,15 +350,17 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms functional-case create '{"name":"登录用例","nodeId":"<moduleId>","projectId":"<projectId>"}'
   ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
   ms functional-case batch-create <json-array-file>
-  ms functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+  ms functional-case generate-create <projectId> - <templateId> <requirement-file>
   ms functional-case delete <caseId>
   ms case-review list '{"projectId":"<your-project-id>"}'
   ms case-review get <review-id>
   ms case-review-user list <review-id>
   ms api list '{"keyword":"用户"}'
-  ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"api-1"}'
+  ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"<definitionId>","request":{"type":"HTTPSamplerProxy","method":"GET","url":"http://example.com/api/user/1","httpSamplerArguments":[],"headers":[],"postBodyProcessor":"NONE"}}'  # 缺少 request 会被拒绝;请优先用 generate-create 自动生成
   ms api-case generate-create <projectId>
   ms api-case generate-create <projectId> <definitionId> [<definitionId>...]
+  ms api-case generate-create --tags T-story-123,T-tech-456 <projectId>
+  ms api-case generate-create --tags T-story-123 --tags T-tech-456 <projectId>
   ms api import-create <projectId> /path/to/openapi.json
   ms api import-generate <projectId> https://example.com/api-docs
   ms comment save <caseId> <description> [type] [belongId]
@@ -423,11 +453,13 @@ with open(out, 'w', encoding='utf-8') as f:
         f.write(json.dumps(el, ensure_ascii=False) + '\n')
 PY
   local need_resolve
-  need_resolve="$(python3 - "$tmp_dir/elements.jsonl" <<'PY'
+    need_resolve="$(python3 - "$tmp_dir/elements.jsonl" <<'PY'
 import json, sys
 for line in open(sys.argv[1], encoding='utf-8'):
     el = json.loads(line)
-    if (el.get('nodePath') or '') == '/' + (el.get('nodeId') or ''):
+    node_id = el.get('nodeId') or ''
+    node_path = el.get('nodePath') or ''
+    if node_id in ('default-module', '') or node_path == '' or node_path == '/' + node_id:
         print('1')
         sys.exit(0)
 print('0')
@@ -445,7 +477,9 @@ PY
 import json, sys
 el = json.loads(sys.argv[1])
 node_id = el.get('nodeId') or ''
-if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
+node_path = el.get('nodePath') or ''
+sentinel = node_id in ('default-module', '') or node_path == '' or node_path == '/' + node_id
+if sentinel and sys.argv[2]:
     try:
         resp = json.loads(sys.argv[2])
         tree = resp.get('data') if isinstance(resp, dict) else resp
@@ -459,6 +493,14 @@ if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
                 nodes[n.get('id')] = n
                 walk(n.get('children'))
         walk(tree)
+        # name-match for unplanned
+        if node_id in ('default-module', ''):
+            for n in nodes.values():
+                if n.get('name') == '未规划用例' and n.get('parentId') is None and n.get('level') == 1:
+                    el['nodeId'] = n.get('id')
+                    el['nodePath'] = '/' + n.get('name')
+                    print(json.dumps(el, ensure_ascii=False))
+                    sys.exit(0)
         parts = []
         cur = nodes.get(node_id)
         seen = set()
@@ -476,6 +518,22 @@ if (el.get('nodePath') or '') == '/' + node_id and sys.argv[2]:
 print(json.dumps(el, ensure_ascii=False))
 PY
 )"
+    fi
+    # post-resolution hard-fail
+    element="$(python3 - "$element" <<'PY'
+import json, sys
+el = json.loads(sys.argv[1])
+node_id = el.get('nodeId') or ''
+node_path = el.get('nodePath') or ''
+sentinel = node_id in ('default-module', '')
+if node_path == '' or node_path.startswith('/default-module') or sentinel or node_path == '/' + node_id:
+    print('ERR')
+    sys.exit(0)
+print(json.dumps(el, ensure_ascii=False))
+PY
+)"
+    if [[ "$element" == "ERR" ]]; then
+      die "batch-create 第 $count 个用例解析失败: nodePath 无效或未能解析模块"
     fi
     local tmp_json
     tmp_json="$(mktemp)"
@@ -620,10 +678,14 @@ print(ic if isinstance(ic, int) else "")
     fi
     # 变体 request（紧凑 JSON 字符串）→ 嵌套对象，逐行输出完整 create 载荷
     # 服务端实测（error.log）：不传 id 报 Column 'id' cannot be null——每条用例必须显式携带 uuid4 id。
+    # 第三个参数是 --tags 归一化后的 JSON 编码字符串；v2.10 的 tags 是 String
+    # （if (StringUtils.equals("[]", request.getTags()))），故必须是编码后的字符串而非裸数组；
+    # 为空则整个省略 tags 键（连 "[]" 都不发）。
     local payloads_file="$tmp_dir/payloads.jsonl"
-    if ! python3 - "$variants_file" "$payloads_file" <<'PY'
+    if ! python3 - "$variants_file" "$payloads_file" "${API_CASE_TAGS_JSON:-}" <<'PY'
 import json, sys, uuid
 variants = json.load(open(sys.argv[1], encoding='utf-8'))
+tags_json = sys.argv[3]
 if not isinstance(variants, list):
     print('错误: 生成器输出不是 JSON 数组', file=sys.stderr)
     sys.exit(1)
@@ -643,6 +705,8 @@ with open(sys.argv[2], 'w', encoding='utf-8') as f:
             v['id'] = str(uuid.uuid4())
         if not v.get('priority'):
             v['priority'] = 'P1'
+        if tags_json:
+            v['tags'] = tags_json
         f.write(json.dumps(v, ensure_ascii=False) + '\n')
 PY
     then
@@ -1107,6 +1171,9 @@ case "$action" in
       # v2: case-review 创建端点为 @RequestBody 纯 JSON（POST /test/case/review/save）
       request POST "$create_path" "$body" "$service_prefix"
     else
+      if [[ "$resource" == "api-case" ]]; then
+        body="$(inject_api_case_create_defaults "$body")"
+      fi
       # v2: 其余创建端点为 multipart/form-data（request=JSON 文件字段）
       tmp_json="$(mktemp)"
       printf '%s' "$body" > "$tmp_json"
@@ -1190,7 +1257,9 @@ PY
     template_id="${3:-}"
     req_file="${4:-}"
     [[ -n "$project_id" ]] || die "generate 需要 projectId"
-    [[ -n "$module_id" ]] || die "generate 需要 moduleId"
+    if [[ -z "$module_id" || "$module_id" == "-" ]]; then
+      module_id="default-module"
+    fi
     [[ -n "$template_id" ]] || die "generate 需要 templateId"
     [[ -n "$req_file" ]] || die "generate 需要 requirement-file"
     python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$req_file" --templateId "$template_id"
@@ -1210,7 +1279,9 @@ PY
       template_id="${3:-}"
       req_file="${4:-}"
       [[ -n "$project_id" ]] || die "generate-create 需要 projectId"
-      [[ -n "$module_id" ]] || die "generate-create 需要 moduleId"
+      if [[ -z "$module_id" || "$module_id" == "-" ]]; then
+        module_id="default-module"
+      fi
       [[ -n "$template_id" ]] || die "generate-create 需要 templateId"
       [[ -n "$req_file" ]] || die "generate-create 需要 requirement-file"
       require_project_id
@@ -1223,10 +1294,55 @@ PY
         usage
         exit 0
       fi
-      project_id="${1:-${METERSPHERE_PROJECT_ID:-}}"
+      # --tags 必须在位置参数赋值之前剥离：project_id 读的是 $1，若不剥离，
+      # `generate-create --tags T1 <projectId>` 会把字面量 "--tags" 当成 projectId
+      # （非空、能过守卫）从而把写入瞄准到不存在的项目。
+      api_case_tags_raw=()
+      api_case_args=()
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          --help|-h|help)
+            usage
+            exit 0
+            ;;
+          --tags)
+            [[ $# -ge 2 ]] || die "--tags 需要标签值，例如 --tags T-story-123（可重复；值内可用逗号或空格分隔多个标签）"
+            api_case_tags_raw+=("$2")
+            shift 2
+            ;;
+          --tags=*)
+            api_case_tags_raw+=("${1#--tags=}")
+            shift
+            ;;
+          *)
+            api_case_args+=("$1")
+            shift
+            ;;
+        esac
+      done
+      if [[ ${#api_case_tags_raw[@]} -gt 0 ]]; then
+        if ! API_CASE_TAGS_JSON="$(python3 - "${api_case_tags_raw[@]}" <<'PY'
+import json, sys
+tags = []
+for raw in sys.argv[1:]:
+    for part in raw.replace(',', ' ').split():
+        if part not in tags:
+            tags.append(part)
+if not tags:
+    sys.exit(1)
+print(json.dumps(tags, ensure_ascii=False))
+PY
+)"; then
+          die "--tags 标签非法：标签值不能为空，多个标签用逗号或空格分隔"
+        fi
+      fi
+      project_id="${api_case_args[0]:-${METERSPHERE_PROJECT_ID:-}}"
       [[ -n "$project_id" ]] || die "api-case generate-create 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
-      shift || true
-      generate_create_api_cases "$project_id" "$@"
+      if [[ ${#api_case_args[@]} -gt 1 ]]; then
+        generate_create_api_cases "$project_id" "${api_case_args[@]:1}"
+      else
+        generate_create_api_cases "$project_id"
+      fi
       exit $?
     else
       die "generate-create 仅支持 functional-case / api-case 资源"

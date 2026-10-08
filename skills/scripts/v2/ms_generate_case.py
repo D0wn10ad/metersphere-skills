@@ -7,7 +7,7 @@
 
 三大变体规则：
   - 成功场景：深拷贝请求 + RESPONSE_CODE 断言 200
-  - 必填缺失：仅当 query/rest 存在必填参数时 → 第一个必填置空 + 断言 400
+  - 必填缺失：仅当 query/rest/arguments 存在必填参数时 → 第一个必填置空 + 断言 400
   - 边界场景：仅当存在 string 参数时 → 第一个 string 设为 128 个 'x' + 断言 200
 
 断言注入位置（v2 实测，见 tests/v2/fixtures/definition_get_c6e4293e.json 与
@@ -30,6 +30,10 @@ import sys
 
 ASSERTIONS_CLAZZ = 'io.metersphere.api.dto.definition.request.assertions.MsAssertions'
 RESPONSE_CODE_SUBJECT = 'Response Code'
+
+# 参与"必填缺失"/"边界场景"变体扫描的参数组，按优先级排序。
+# arguments 条目与 query 条目同构（MsHTTPArgument），故与 query/rest 一同扫描。
+PARAM_GROUPS = ('query', 'rest', 'arguments')
 
 
 def die(msg: str, code: int = 1):
@@ -71,13 +75,13 @@ def _first_matching(request: dict, groups, predicate) -> tuple:
 
 
 def _first_required(request: dict):
-    return _first_matching(request, ('query', 'rest'), lambda p: bool(p.get('required')))
+    return _first_matching(request, PARAM_GROUPS, lambda p: bool(p.get('required')))
 
 
 def _first_string_param(request: dict):
     def is_string(p):
         return p.get('type') == 'string' or p.get('paramType') == 'string'
-    return _first_matching(request, ('query', 'rest'), is_string)
+    return _first_matching(request, PARAM_GROUPS, is_string)
 
 
 def build_assertion_node(expected_value) -> dict:

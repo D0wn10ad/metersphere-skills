@@ -122,6 +122,8 @@ metersphere-skills/
         └── v2/
             ├── ms.sh
             ├── ms_generate.py
+            ├── ms_generate_case.py
+            ├── ms_import_helper.py
             ├── ms_chat_log.py
             ├── ms_case_report.py
             ├── ms_review_summary.py
@@ -141,7 +143,7 @@ metersphere-skills/
 - `skills/scripts/ms_review_summary.py`：用例评审汇总脚本
 - `skills/scripts/ms_case_report.py`：单用例结构化报告
 - `skills/scripts/ms_case_report_md.py`：单用例 Markdown 报告
-- `skills/scripts/v2/`：MeterSphere v2 分支兼容脚本（ms.sh / ms_generate.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）
+- `skills/scripts/v2/`：MeterSphere v2.10 LTS 专用脚本（ms.sh / ms_generate.py / ms_generate_case.py / ms_import_helper.py / ms_chat_log.py / ms_case_report.py / ms_review_summary.py / ms_case_report_md.py，自动嗅探版本，或设 `METERSPHERE_VERSION=v2`）。目标版本详见 §16。
 
 ---
 
@@ -393,14 +395,19 @@ cd ~/.agents/skills/metersphere
 #### API 定义 → 接口用例（case factory）
 
 ```bash
-./scripts/v2/ms.sh api-case generate-create <projectId> [<definitionId>...]
+./scripts/v2/ms.sh api-case generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]
+
+# 例：给用户故事 T-story-123 与技术工单 T-tech-456 打标签，批量生成并写入
+./scripts/v2/ms.sh api-case generate-create --tags T-story-123,T-tech-456 <projectId> <definitionId1> <definitionId2>
 ```
 
-- 为**已存在**的 API 定义批量生成带断言的接口用例（每端点 3 个变体：`*成功场景`（断言 200，P1）/ `*必填缺失`（首个必填 query/rest 参数置空，断言 400，P1，仅当存在必填参数）/ `*边界场景`（首个字符串参数 = 128 个 'x'，断言 200，P2，仅当存在字符串参数）），填补 v2 导入只建定义不建用例（`caseTotal='0'`）的缺口。
+- 为**已存在**的 API 定义批量生成带断言的接口用例（每端点 3 个变体：`*成功场景`（断言 200，P1）/ `*必填缺失`（首个必填 query / rest / arguments 参数置空，断言 400，P1，仅当存在必填参数）/ `*边界场景`（首个字符串参数 = 128 个 'x'，断言 200，P2，仅当存在字符串参数）），填补 v2 导入只建定义不建用例（`caseTotal='0'`）的缺口。
 - 不传 definitionId = 项目内全部 HTTP 定义（自动分页拉取）；变体生成由 `skills/scripts/v2/ms_generate_case.py` 完成（纯本地，无网络）。
 - **服务端实测要求**（缺一即创建失败）：每条用例必须显式携带 `id`（uuid4，服务端不自动生成）、显式 `priority`、`request` 为嵌套对象（JSON 字符串会被 400 拒绝）——脚本已自动处理。
+- `--tags <标签[,标签...]>`（**可选，可重复**）：给每条生成的用例写入 `tags` 标签（典型用途是 Phabricator 工单号），值内可用逗号或空格分隔多个标签，脚本归一化去重后序列化成 **JSON 编码的字符串**（v2.10 的 `tags` 是 String 字段而非数组，裸数组会丢标签）；等价的重复写法 `--tags T-story-123 --tags T-tech-456`。**缺省时载荷里完全不含 `tags` 键**（连 `"[]"` 都不发）。必须在位置参数之前或之后皆可——脚本先剥离 `--tags` 再解析位置参数。
 - **不创建定义**（定义由导入或插件负责）；不执行用例；不添加 JSONPath 断言（仅状态码断言）。
-- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），当前变体扫描 `query`/`rest`——参数存于 `arguments` 或仅 body 必填的定义只会生成 `*成功场景`（后续版本扩展）。
+- 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），`skills/scripts/v2/ms_generate_case.py` 的变体扫描按 `query` > `rest` > `arguments` 的优先级依次覆盖三组参数（`PARAM_GROUPS = ('query', 'rest', 'arguments')`，`arguments` 条目与 `query` 同构故一并扫描）。因此**只有 body、三个参数组都没有必填或字符串参数**的定义才会只生成 `*成功场景`，缺少必填缺失与边界覆盖，这类定义需交给 AI 增强步骤补偿。
+- 参数组命名对照（易混淆点）：`v1` 指 `skills/scripts/`（对接 MeterSphere v3.x），`v2` 指 `skills/scripts/v2/`（对接 MeterSphere v2.10 LTS），并非 MeterSphere 产品版本号。详见 §16。
 - 失败不中断：单条创建失败继续其余，汇总报告；仅当 0 条创建成功时退出非零。
 
 #### AI 对话记录（chat-history flow）
@@ -598,6 +605,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - `skills/references/ai-api-bundle-prompt.md`
 - `skills/references/ai-v2-functional-case-prompt.md`
 - `skills/references/ai-v2-api-case-prompt.md`
+- `skills/references/ai-module-api-case-prompt.md`
+- `skills/references/ai-phabricator-api-case-prompt.md`
 
 ---
 
@@ -613,3 +622,44 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 那么这套 Skills 的价值就在于：
 
 > 用统一命令与统一输出格式，把零散的 MeterSphere API 操作，收敛为可复用、可触发、可直接交付的 Agent 能力。
+
+---
+
+## 16. 两套脚本的版本对应关系（v1 / v2 命名的真实含义）
+
+本仓库有两套脚本入口，目录名 `v1` / `v2` 指的是**脚本的版本**，而**不是** MeterSphere 的产品版本。这一点极易误解，下表为源码实测结论。
+
+| 脚本位置 | 通常被称作 | 实际对接的 MeterSphere 版本 |
+| --- | --- | --- |
+| `skills/scripts/` | v1 | **MeterSphere v3.x** |
+| `skills/scripts/v2/` | v2 | **MeterSphere v2.10 LTS** |
+
+### 16.1 `skills/scripts/`（俗称 v1）→ MeterSphere v3.x
+
+依据（均可在 MeterSphere 源码树核对）：
+
+- 校验点：本地 MeterSphere 检出 `cf7a649a71` 与 `origin/v3.x`、tag `v3.6.9-lts` 指向同一提交。
+- v1 使用的路径在该树上均存在：`/api/case/add`、`/functional/case/add`、`/system/version/current`。
+- `ApiTestCaseService.addCase()` 内 `testCase.setId(IDGenerator.nextStr())`——**由 v3.x 服务端自行生成用例 ID**，因此 v1 写入时无需客户端指定 ID。
+
+### 16.2 `skills/scripts/v2/` → MeterSphere v2.10 LTS
+
+依据：
+
+- 校验点：真实 tag `v2.10.26-lts`（提交 `b2d3d1d09ac119d6c03d7b767e33fd449665ced5`）的 `ApiTestCaseController.java:36` 为 `@RequestMapping(value = "/api/testcase")`，`:120` 为 `@PostMapping(value = "/create", consumes = {"multipart/form-data"})`。
+- 该路径与 `skills/scripts/v2/ms.sh:49` 的 `METERSPHERE_API_CASE_CREATE_PATH='/api/testcase/create'` 完全一致。
+- 服务端**不生成**用例 ID，故 v2 侧每条用例必须显式携带 `id`（uuid4）——这是 v2 与 v1 最容易踩的差异之一。
+- v2 的 query 参数存放在 `arguments` 字段而非 `query`（参数组扫描差异见 §8.6 覆盖说明）。
+
+### 16.3 两条产品线源码布局不同
+
+定位问题时可直接用目录结构区分：
+
+- **v2.10 LTS**：`api-test/backend/src/main/java/io/metersphere/...`
+- **v3.x**：`backend/services/api-test/src/main/java/io/metersphere/api/...`
+
+### 16.4 排查同名脚本时的注意事项
+
+`skills/scripts/ms.sh` 与 `skills/scripts/v2/ms.sh` 是**两个独立文件**，各自可能存在同名内部函数（例如 `normalize_json_with_defaults`）。它们服务于不同产品版本、互不共享实现。定位问题时务必确认当前路径属于哪一套，**不要**把两者的函数实现当作同一份代码来推断行为。
+
+> 校验 tag 时注意：若本地存在与 tag 同名的分支（例如 `v2.10.26-lts` 分支会遮蔽同名 tag），`git rev-parse v2.10.26-lts` 会解析到分支上。必须使用 `git rev-parse v2.10.26-lts^{commit}` 显式解析到 tag 对应的提交。
