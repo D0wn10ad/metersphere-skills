@@ -43,6 +43,15 @@ METERSPHERE_PROTOCOLS_JSON="${METERSPHERE_PROTOCOLS_JSON:-[\"HTTP\"]}"
 [[ -n "${METERSPHERE_API_CASE_GET_PATH:-}" ]] || METERSPHERE_API_CASE_GET_PATH='/api/case/get-detail/{id}'
 [[ -n "${METERSPHERE_API_CASE_CREATE_PATH:-}" ]] || METERSPHERE_API_CASE_CREATE_PATH='/api/case/add'
 
+# v3 file / attachment endpoints —— 未验证 (source-only)：本环境无 v3 服务器，路径来自
+# refs/heads/v3.x 源码（FileManagementController / FunctionalCaseAttachmentController）。
+[[ -n "${METERSPHERE_FILE_UPLOAD_PATH:-}" ]] || METERSPHERE_FILE_UPLOAD_PATH='/project/file/upload'
+[[ -n "${METERSPHERE_FILE_PAGE_PATH:-}" ]] || METERSPHERE_FILE_PAGE_PATH='/project/file/page'
+[[ -n "${METERSPHERE_FILE_DELETE_PATH:-}" ]] || METERSPHERE_FILE_DELETE_PATH='/project/file/delete'
+[[ -n "${METERSPHERE_ATTACHMENT_UPLOAD_FILE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_UPLOAD_FILE_PATH='/attachment/upload/file'
+[[ -n "${METERSPHERE_ATTACHMENT_PAGE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_PAGE_PATH='/attachment/page'
+[[ -n "${METERSPHERE_ATTACHMENT_DELETE_FILE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_DELETE_FILE_PATH='/attachment/delete/file'
+
 die() { echo "错误: $*" >&2; exit 1; }
 
 need_base_url() {
@@ -52,6 +61,10 @@ need_base_url() {
 need_keys() {
   [[ -n "$METERSPHERE_ACCESS_KEY" ]] || die "未设置 METERSPHERE_ACCESS_KEY"
   [[ -n "$METERSPHERE_SECRET_KEY" ]] || die "未设置 METERSPHERE_SECRET_KEY"
+}
+
+require_project_id() {
+  [[ -n "$METERSPHERE_PROJECT_ID" ]] || die "写入操作需要设置 METERSPHERE_PROJECT_ID"
 }
 
 generate_signature() {
@@ -156,6 +169,31 @@ request() {
   rm -f "$header_file"
 }
 
+# multipart POST —— 复用 generate_signature 的签名方案（不再写 openssl 调用）。
+# 调用方传入额外的 -F 片段；请求头不含 Content-Type: application/json，交给 curl 生成 multipart 边界。
+request_multipart() {
+  local path="$1"; shift
+  need_base_url
+  need_keys
+  local url="${METERSPHERE_BASE_URL%/}${path}"
+  local signature
+  signature="$(generate_signature)"
+  local -a header_args=(-H "accessKey: $METERSPHERE_ACCESS_KEY" -H "signature: $signature")
+  if [[ -n "$METERSPHERE_HEADERS_JSON" ]]; then
+    local extra
+    extra="$(python3 - <<'PY' "$METERSPHERE_HEADERS_JSON"
+import json,sys
+for k,v in json.loads(sys.argv[1]).items():
+    print(f'{k}: {v}')
+PY
+)"
+    while IFS= read -r line; do
+      [[ -n "$line" ]] && header_args+=(-H "$line")
+    done <<< "$extra"
+  fi
+  curl -sS -X POST "$url" "${header_args[@]}" "$@"
+}
+
 path_fill() {
   local template="$1" value="$2"
   template="${template/\{id\}/$value}"
@@ -205,6 +243,12 @@ resource_paths() {
     api-case)
       echo "$METERSPHERE_API_CASE_LIST_PATH|$METERSPHERE_API_CASE_GET_PATH|$METERSPHERE_API_CASE_CREATE_PATH"
       ;;
+    file)
+      echo "$METERSPHERE_FILE_PAGE_PATH||$METERSPHERE_FILE_UPLOAD_PATH"
+      ;;
+    attachment)
+      echo "$METERSPHERE_ATTACHMENT_PAGE_PATH||$METERSPHERE_ATTACHMENT_UPLOAD_FILE_PATH"
+      ;;
     *)
       die "不支持的资源: $1"
       ;;
@@ -218,9 +262,16 @@ ms — MeterSphere CLI
 用法:
   ms <resource> <action> [args...]
   ms raw <METHOD> <PATH> [JSON]
-  ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
-  ms functional-case batch-create <json-file>
-  ms functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+  ms functional-case generate <projectId> <moduleId|-|空> <templateId> <requirement-file>
+  ms functional-case batch-create <json-file> [--file-id <fileMetadataId>]
+  ms functional-case generate-create <projectId> <moduleId|-|空> <templateId> <requirement-file>
+  ms file upload <json> <local-file>            # 未验证 (source-only)
+  ms file page <json>                           # 未验证 (source-only)
+  ms file delete <json>                         # 未验证 (source-only)
+  ms attachment upload <caseId|json> <file>     # 未验证 (source-only)
+  ms attachment relate <caseId> <fileId>...     # 未验证 (source-only)
+  ms attachment page <json>                     # 未验证 (source-only)
+  ms attachment delete <json>                   # 未验证 (source-only)
   ms api import-generate <projectId> <moduleId> <openapi-file-or-url>
   ms api batch-create <json-file>
   ms api import-create <projectId> <moduleId> <openapi-file-or-url>
@@ -242,16 +293,22 @@ ms — MeterSphere CLI
   case-review-user
   api
   api-case
+  file
+  attachment
 
 动作:
   list [关键词|JSON]
   get <id>
   create <JSON>
   generate <...>
-  batch-create <json-file>
+  batch-create <json-file> [--file-id <fileMetadataId>]
   generate-create <...>
   import-generate <...>
   import-create <...>
+  upload <json> <local-file>     # file; 未验证 (source-only)
+  page <json>                    # file / attachment; 未验证 (source-only)
+  delete <json>                  # file / attachment; 未验证 (source-only)
+  relate <caseId> <fileId>...    # attachment; 未验证 (source-only)
 
 示例:
   ms organization list
@@ -276,7 +333,15 @@ ms — MeterSphere CLI
   ms api-case create '{"name":"获取用户详情-200","apiDefinitionId":"api-1"}'
   ms functional-case generate 100001100001 733374274027520 100844458962059505 ./requirement.txt
   ms functional-case batch-create ./functional-cases.json
+  ms functional-case batch-create ./functional-cases.json --file-id <fileMetadataId>
   ms functional-case generate-create 100001100001 733374274027520 100844458962059505 ./requirement.txt
+  ms file upload '{"projectId":"<your-project-id>"}' ./report.pdf       # 未验证 (source-only)
+  ms file page '{"current":1,"pageSize":20}'                            # 未验证 (source-only)
+  ms file delete '{"ids":["<fileMetadataId>"]}'                         # 未验证 (source-only)
+  ms attachment upload <caseId> ./report.pdf                            # 未验证 (source-only)
+  ms attachment relate <caseId> <fileMetadataId>                        # 未验证 (source-only)
+  ms attachment page '{"caseId":"<caseId>"}'                            # 未验证 (source-only)
+  ms attachment delete '{"ids":["<fileMetadataId>"]}'                   # 未验证 (source-only)
   ms api import-generate 100001100001 root ./openapi.json
   ms api batch-create ./api-bundle.json
   ms api import-create 100001100001 root ./openapi.json
@@ -335,6 +400,11 @@ IFS='|' read -r list_path get_path create_path <<< "$(resource_paths "$resource"
 
 case "$action" in
   list)
+    if [[ "$resource" == "file" ]]; then
+      die "file 资源不支持 list/get"
+    elif [[ "$resource" == "attachment" ]]; then
+      die "attachment 资源不支持 list/get（请使用 attachment page）"
+    fi
     arg="${1:-}"
     if [[ "$resource" == "organization" ]]; then
       if [[ -n "$arg" && "$arg" == \{* ]]; then
@@ -384,6 +454,11 @@ case "$action" in
     fi
     ;;
   get)
+    if [[ "$resource" == "file" ]]; then
+      die "file 资源不支持 list/get"
+    elif [[ "$resource" == "attachment" ]]; then
+      die "attachment 资源不支持 list/get（请使用 attachment page）"
+    fi
     id="${1:-}"
     [[ -n "$id" ]] || die "get 需要 id"
     request GET "$(path_fill "$get_path" "$id")"
@@ -397,14 +472,40 @@ case "$action" in
   generate)
     [[ "$resource" == "functional-case" ]] || die "generate 目前仅支持 functional-case"
     project_id="${1:-}"; module_id="${2:-}"; template_id="${3:-}"; requirement_file="${4:-}"
-    [[ -n "$project_id" && -n "$module_id" && -n "$template_id" && -n "$requirement_file" ]] || die "用法: ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>"
+    # moduleId 允许 `-` 或空：回退为字面量 root（服务端解析到项目根模块）。
+    [[ -n "$module_id" && "$module_id" != "-" ]] || module_id="root"
+    [[ -n "$project_id" && -n "$module_id" && -n "$template_id" && -n "$requirement_file" ]] || die "用法: ms functional-case generate <projectId> <moduleId|-|空> <templateId> <requirement-file>"
     python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$template_id" "$requirement_file"
     ;;
   batch-create)
-    json_file="${1:-}"
+    positional=()
+    attach_file_id=""
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --file-id)
+          [[ -n "${2:-}" ]] || die "--file-id 需要 <fileMetadataId>"
+          attach_file_id="$2"
+          shift 2
+          ;;
+        --file-id=*)
+          attach_file_id="${1#--file-id=}"
+          shift
+          ;;
+        *)
+          positional+=("$1")
+          shift
+          ;;
+      esac
+    done
+    json_file="${positional[0]:-}"
     [[ -n "$json_file" ]] || die "batch-create 需要 json 文件路径"
     if [[ "$resource" == "functional-case" ]]; then
-      python3 "$SCRIPT_DIR/ms_batch.py" functional-cases "$json_file"
+      # --file-id 透传给 ms_batch.py --attach-file-id；relateFileMetaIds 的注入/去重由 ms_batch.py 负责。
+      if [[ -n "$attach_file_id" ]]; then
+        python3 "$SCRIPT_DIR/ms_batch.py" functional-cases "$json_file" --attach-file-id "$attach_file_id"
+      else
+        python3 "$SCRIPT_DIR/ms_batch.py" functional-cases "$json_file"
+      fi
     elif [[ "$resource" == "api" ]]; then
       python3 "$SCRIPT_DIR/ms_batch.py" api-import "$json_file"
     else
@@ -414,7 +515,9 @@ case "$action" in
   generate-create)
     [[ "$resource" == "functional-case" ]] || die "generate-create 目前仅支持 functional-case"
     project_id="${1:-}"; module_id="${2:-}"; template_id="${3:-}"; requirement_file="${4:-}"
-    [[ -n "$project_id" && -n "$module_id" && -n "$template_id" && -n "$requirement_file" ]] || die "用法: ms functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>"
+    # moduleId 允许 `-` 或空：回退为字面量 root（服务端解析到项目根模块）。
+    [[ -n "$module_id" && "$module_id" != "-" ]] || module_id="root"
+    [[ -n "$project_id" && -n "$module_id" && -n "$template_id" && -n "$requirement_file" ]] || die "用法: ms functional-case generate-create <projectId> <moduleId|-|空> <templateId> <requirement-file>"
     tmp_json="$(mktemp)"
     python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$template_id" "$requirement_file" > "$tmp_json"
     python3 "$SCRIPT_DIR/ms_batch.py" functional-cases "$tmp_json"
@@ -434,6 +537,114 @@ case "$action" in
     python3 "$SCRIPT_DIR/ms_generate.py" api-import "$project_id" "$module_id" "$openapi_src" > "$tmp_json"
     python3 "$SCRIPT_DIR/ms_batch.py" api-import "$tmp_json"
     rm -f "$tmp_json"
+    ;;
+  upload)
+    case "$resource" in
+      file)
+        require_project_id
+        upload_json="${1:-}"
+        local_file="${2:-}"
+        [[ -n "$upload_json" && -n "$local_file" ]] || die "用法: ms file upload <JSON> <local-file>"
+        [[ -f "$local_file" ]] || die "文件不存在: $local_file"
+        upload_body="$(python3 - <<'PY' "$upload_json" "$METERSPHERE_PROJECT_ID"
+import json,sys
+data=json.loads(sys.argv[1]); pid=sys.argv[2]
+if isinstance(data,dict) and pid and not data.get("projectId"):
+    data["projectId"]=pid
+print(json.dumps(data,ensure_ascii=False))
+PY
+)"
+        multipart_tmp="$(mktemp)"
+        printf '%s' "$upload_body" > "$multipart_tmp"
+        request_multipart "$METERSPHERE_FILE_UPLOAD_PATH" -F "request=@$multipart_tmp;type=application/json" -F "file=@$local_file"
+        rm -f "$multipart_tmp"
+        ;;
+      attachment)
+        require_project_id
+        target="${1:-}"
+        local_file="${2:-}"
+        [[ -n "$target" && -n "$local_file" ]] || die "用法: ms attachment upload <caseId|JSON> <file>"
+        [[ -f "$local_file" ]] || die "文件不存在: $local_file"
+        if [[ "$target" == \{* ]]; then
+          upload_body="$(python3 - <<'PY' "$target" "$METERSPHERE_PROJECT_ID"
+import json,sys
+data=json.loads(sys.argv[1]); pid=sys.argv[2]
+if isinstance(data,dict) and pid and not data.get("projectId"):
+    data["projectId"]=pid
+print(json.dumps(data,ensure_ascii=False))
+PY
+)"
+        else
+          upload_body="{\"projectId\":\"$METERSPHERE_PROJECT_ID\",\"caseId\":\"$target\"}"
+        fi
+        multipart_tmp="$(mktemp)"
+        printf '%s' "$upload_body" > "$multipart_tmp"
+        request_multipart "$METERSPHERE_ATTACHMENT_UPLOAD_FILE_PATH" -F "request=@$multipart_tmp;type=application/json" -F "file=@$local_file"
+        rm -f "$multipart_tmp"
+        ;;
+      *)
+        die "upload 仅支持 file / attachment"
+        ;;
+    esac
+    ;;
+  page)
+    case "$resource" in
+      file)
+        arg="${1:-}"
+        if [[ -n "$arg" && "$arg" == \{* ]]; then
+          body="$arg"
+        else
+          body="$(default_list_payload "$resource" "$arg")"
+        fi
+        request POST "$METERSPHERE_FILE_PAGE_PATH" "$body"
+        ;;
+      attachment)
+        arg="${1:-}"
+        if [[ -n "$arg" && "$arg" == \{* ]]; then
+          body="$arg"
+        else
+          body="$(default_list_payload "$resource" "$arg")"
+        fi
+        request POST "$METERSPHERE_ATTACHMENT_PAGE_PATH" "$body"
+        ;;
+      *)
+        die "page 仅支持 file / attachment"
+        ;;
+    esac
+    ;;
+  delete)
+    require_project_id
+    body="${1:-}"
+    [[ -n "$body" ]] || die "delete 需要 JSON body"
+    case "$resource" in
+      file)
+        request POST "$METERSPHERE_FILE_DELETE_PATH" "$body"
+        ;;
+      attachment)
+        request POST "$METERSPHERE_ATTACHMENT_DELETE_FILE_PATH" "$body"
+        ;;
+      *)
+        die "delete 仅支持 file / attachment"
+        ;;
+    esac
+    ;;
+  relate)
+    [[ "$resource" == "attachment" ]] || die "relate 仅支持 attachment"
+    require_project_id
+    case_id="${1:-}"
+    [[ -n "$case_id" ]] || die "用法: ms attachment relate <caseId> <fileId>..."
+    shift || true
+    [[ "$#" -gt 0 ]] || die "用法: ms attachment relate <caseId> <fileId>..."
+    relate_body="$(python3 - <<'PY' "$METERSPHERE_PROJECT_ID" "$case_id" "$@"
+import json,sys
+pid=sys.argv[1]; cid=sys.argv[2]; ids=sys.argv[3:]
+print(json.dumps({"projectId":pid,"caseId":cid,"fileIds":ids},ensure_ascii=False))
+PY
+)"
+    multipart_tmp="$(mktemp)"
+    printf '%s' "$relate_body" > "$multipart_tmp"
+    request_multipart "$METERSPHERE_ATTACHMENT_UPLOAD_FILE_PATH" -F "request=@$multipart_tmp;type=application/json"
+    rm -f "$multipart_tmp"
     ;;
   help|-h|--help)
     usage

@@ -59,6 +59,12 @@ API_CASE_TAGS_JSON=""
 [[ -n "${METERSPHERE_ATTACHMENT_LIST_PATH:-}" ]] || METERSPHERE_ATTACHMENT_LIST_PATH='/attachment/metadata/list'
 [[ -n "${METERSPHERE_ATTACHMENT_DOWNLOAD_PATH:-}" ]] || METERSPHERE_ATTACHMENT_DOWNLOAD_PATH='/attachment/download'
 [[ -n "${METERSPHERE_ATTACHMENT_DELETE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_DELETE_PATH='/attachment/delete/testcase'
+# v2 项目文件库（可共享附件）：create 为 multipart（request=FileMetadataCreateRequest + file=@），
+# exists 仅作批量 id 校验。page / name 过滤端点实测损坏，刻意不暴露 list/get。
+[[ -n "${METERSPHERE_FILE_METADATA_CREATE_PATH:-}" ]] || METERSPHERE_FILE_METADATA_CREATE_PATH='/file/metadata/create'
+[[ -n "${METERSPHERE_FILE_METADATA_EXISTS_PATH:-}" ]] || METERSPHERE_FILE_METADATA_EXISTS_PATH='/file/metadata/exists'
+# 库文件 → 用例关联：POST {belongId, belongType:"testcase", metadataRefIds:[…]}。
+[[ -n "${METERSPHERE_ATTACHMENT_RELATE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_RELATE_PATH='/attachment/testcase/metadata/relate'
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -200,7 +206,7 @@ service_prefix() {
   # v2 网关 discovery locator：/{serviceId}/** 剥掉首段 serviceId 后转发到对应微服务。
   # track：功能模块/功能用例/评审系；project：功能模板；其余（含 raw）走 api。
   case "$1" in
-    functional-module|functional-case|functional-case-review|case-review|case-review-detail|case-review-module|case-review-user|comment|attachment)
+    functional-module|functional-case|functional-case-review|case-review|case-review-detail|case-review-module|case-review-user|comment|attachment|file)
       echo "track"
       ;;
     functional-template)
@@ -290,6 +296,8 @@ resource_paths() {
     attachment)
       echo "$METERSPHERE_ATTACHMENT_LIST_PATH|$METERSPHERE_ATTACHMENT_DOWNLOAD_PATH|$METERSPHERE_ATTACHMENT_UPLOAD_PATH"
       ;;
+    # file 仅 create（+ 批量 exists 校验）；page/name 过滤端点已损坏，不暴露 list/get。
+    file) echo "|$METERSPHERE_FILE_METADATA_CREATE_PATH|";;
     *)
       die "不支持的资源: $1"
       ;;
@@ -326,11 +334,16 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   api-case
   comment
   attachment
+  file
 
 动作:
   list [关键词|JSON]
   get <id>
   create <JSON>
+  create <JSON> <local-file>  (file: 创建项目文件库文件，multipart 上传)
+  exists <fileId>...  (file: 批量校验文件元数据 id 是否存在)
+  relate <caseId> <fileId>...  (attachment: 将库文件关联为用例附件)
+  batch-create <json-array-file> [--file-id <fileMetadataId>]  (functional-case: 可选把库文件关联进每条用例)
   generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
   generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]  (api-case: 额外写入 phabricator 标签，--tags 可重复)
   import-generate <projectId> <spec> [moduleId] (api: 导入 spec 生成定义+用例计划，不写入用例)
@@ -350,6 +363,7 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms functional-case create '{"name":"登录用例","nodeId":"<moduleId>","projectId":"<projectId>"}'
   ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
   ms functional-case batch-create <json-array-file>
+  ms functional-case batch-create <json-array-file> --file-id <fileMetadataId>
   ms functional-case generate-create <projectId> - <templateId> <requirement-file>
   ms functional-case delete <caseId>
   ms case-review list '{"projectId":"<your-project-id>"}'
@@ -369,8 +383,11 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms comment edit <commentId> <caseId> <description> [type] [belongId]
   ms attachment upload <caseId> <file>
   ms attachment list <caseId>
+  ms attachment relate <caseId> <fileId> [<fileId>...]
   ms attachment download <attachmentId> <isLocal> <outfile>
   ms attachment delete <attachmentId>
+  ms file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
+  ms file exists <fileId> [<fileId>...]
   ms raw GET /system/version
 EOF
 }
@@ -425,18 +442,58 @@ shift || true
 IFS='|' read -r list_path get_path create_path <<< "$(resource_paths "$resource")"
 service_prefix="$(service_prefix "$resource")"
 
+# 批量校验文件元数据 id 是否存在于项目文件库（POST /file/metadata/exists，载荷为 id 数组）。
+# 服务端仅回显存在的 id。返回 0 = 全部存在；返回 1 = 有缺失。响应存入 FILE_EXISTS_RESP。
+file_metadata_exists() {
+  local -a ids=("$@")
+  local body
+  body="$(python3 - "${ids[@]}" <<'PY'
+import json, sys
+print(json.dumps(list(sys.argv[1:]), ensure_ascii=False))
+PY
+)"
+  local resp
+  resp="$(request POST "$METERSPHERE_FILE_METADATA_EXISTS_PATH" "$body" "$service_prefix")"
+  FILE_EXISTS_RESP="$resp"
+  python3 - "$resp" "${ids[@]}" <<'PY'
+import json, sys
+raw, requested = sys.argv[1], sys.argv[2:]
+try:
+    resp = json.loads(raw) if raw else []
+except Exception:
+    resp = []
+present = set()
+def add(x):
+    if isinstance(x, str):
+        present.add(x)
+    elif isinstance(x, dict) and x.get('id'):
+        present.add(x['id'])
+if isinstance(resp, list):
+    for x in resp:
+        add(x)
+elif isinstance(resp, dict):
+    data = resp.get('data')
+    if isinstance(data, list):
+        for x in data:
+            add(x)
+missing = [i for i in requested if i not in present]
+sys.exit(0 if not missing else 1)
+PY
+}
+
 # 批量创建功能用例：读取 JSON 数组文件，逐元素 POST /track/test/case/add（multipart）。
 # nodePath 占位符（"/"+nodeId，来自 ms_generate.py）会按模块树解析为真实路径；
 # 解析失败则透传，由服务端校验。
 batch_create_functional_cases() {
   local json_file="$1"
+  local attach_file_id="${2:-}"
   local project_id="$METERSPHERE_PROJECT_ID"
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
-  python3 - "$json_file" "$tmp_dir/elements.jsonl" <<'PY'
+  python3 - "$json_file" "$tmp_dir/elements.jsonl" "$attach_file_id" <<'PY'
 import json, sys
-path, out = sys.argv[1], sys.argv[2]
+path, out, attach_id = sys.argv[1], sys.argv[2], sys.argv[3]
 try:
     data = json.load(open(path, encoding='utf-8'))
 except Exception as e:
@@ -450,6 +507,17 @@ with open(out, 'w', encoding='utf-8') as f:
         if not isinstance(el, dict):
             print(f'错误: 第 {i+1} 个元素不是 JSON 对象', file=sys.stderr)
             sys.exit(1)
+        if attach_id:
+            existing = el.get('relateFileMetaIds')
+            if isinstance(existing, list):
+                ids = [str(x) for x in existing if x]
+            elif existing:
+                ids = [str(existing)]
+            else:
+                ids = []
+            if attach_id not in ids:
+                ids.append(attach_id)
+            el['relateFileMetaIds'] = ids
         f.write(json.dumps(el, ensure_ascii=False) + '\n')
 PY
   local need_resolve
@@ -1091,6 +1159,7 @@ else:
 
 case "$action" in
   list)
+    [[ "$resource" != "file" ]] || die "file 资源不支持 list/get"
     arg="${1:-}"
     if [[ "$resource" == "organization" ]]; then
       # v2: workspace list 是 GET，无 body
@@ -1158,11 +1227,46 @@ case "$action" in
     fi
     ;;
   get)
+    [[ "$resource" != "file" ]] || die "file 资源不支持 list/get"
     id="${1:-}"
     [[ -n "$id" ]] || die "get 需要 id"
     request GET "$(path_fill "$get_path" "$id")" "" "$service_prefix"
     ;;
   create)
+    if [[ "$resource" == "file" ]]; then
+      body="${1:-}"
+      local_file="${2:-}"
+      [[ -n "$body" ]] || die "file create 需要 JSON body"
+      [[ -n "$local_file" ]] || die "file create 需要 local-file"
+      [[ -f "$local_file" ]] || die "file create 文件不存在: $local_file"
+      require_project_id
+      tmp_json="$(mktemp)"
+      printf '%s' "$body" > "$tmp_json"
+      need_base_url
+      need_keys
+      signature="$(generate_signature)"
+      resp="$(curl -sS -X POST \
+        -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+        -H "signature: $signature" \
+        -F "request=@${tmp_json};type=application/json" \
+        -F "file=@${local_file}" \
+        "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_FILE_METADATA_CREATE_PATH}")"
+      rm -f "$tmp_json"
+      printf '%s\n' "$resp"
+      [[ "$resp" != *'"success":false'* ]] || die "file create 失败: $resp"
+      file_id="$(printf '%s' "$resp" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict):
+    d = d.get("data")
+if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get("id"):
+    print(d[0]["id"])
+' 2>/dev/null || true)"
+      [[ -n "$file_id" ]] || die "file create 失败: 响应未包含文件 id: $resp"
+      exit 0
+    fi
     body="${1:-}"
     [[ -n "$body" ]] || die "create 需要 JSON body"
     require_project_id
@@ -1250,6 +1354,42 @@ PY
     printf '%s\n' "$resp"
     [[ "$resp" != *'"success":false'* ]] || die "comment edit 失败: $resp"
     ;;
+  exists)
+    [[ "$resource" == "file" ]] || die "exists 仅支持 file 资源"
+    [[ $# -ge 1 ]] || die "file exists 需要至少一个 fileId"
+    if ! file_metadata_exists "$@"; then
+      printf '%s\n' "$FILE_EXISTS_RESP"
+      die "file exists 校验失败: 存在未找到的 fileId"
+    fi
+    printf '%s\n' "$FILE_EXISTS_RESP"
+    ;;
+  relate)
+    [[ "$resource" == "attachment" ]] || die "relate 仅支持 attachment 资源"
+    case_id="${1:-}"
+    [[ -n "$case_id" ]] || die "attachment relate 需要 caseId"
+    shift || true
+    [[ $# -ge 1 ]] || die "attachment relate 需要至少一个 fileId"
+    require_project_id
+    body="$(python3 - "$case_id" "$@" <<'PY'
+import json, sys
+print(json.dumps({"belongId": sys.argv[1], "belongType": "testcase", "metadataRefIds": list(sys.argv[2:])}, ensure_ascii=False))
+PY
+)"
+    need_base_url
+    need_keys
+    signature="$(generate_signature)"
+    http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
+      -H "Content-Type: application/json" \
+      -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+      -H "signature: $signature" \
+      -d "$body" \
+      "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_ATTACHMENT_RELATE_PATH}")"
+    http_code="${http_out##*$'\n'}"
+    resp="${http_out%$'\n'*}"
+    printf '%s\n' "$resp"
+    [[ "$http_code" == "200" ]] || die "attachment relate 失败 (HTTP $http_code): $resp"
+    [[ "$resp" != *'"success":false'* ]] || die "attachment relate 失败: $resp"
+    ;;
   generate)
     [[ "$resource" == "functional-case" ]] || die "generate 仅支持 functional-case 资源"
     project_id="${1:-}"
@@ -1266,11 +1406,35 @@ PY
     ;;
   batch-create)
     [[ "$resource" == "functional-case" ]] || die "batch-create 仅支持 functional-case 资源"
-    json_file="${1:-}"
+    # --file-id 必须在读取位置参数之前剥离（镜像 api-case generate-create 的 --tags 剥离），
+    # 否则会把字面量 "--file-id" 当成 json 文件名。
+    batch_file_id=""
+    batch_args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --file-id)
+          [[ $# -ge 2 ]] || die "--file-id 需要文件元数据 id"
+          batch_file_id="$2"
+          shift 2
+          ;;
+        --file-id=*)
+          batch_file_id="${1#--file-id=}"
+          shift
+          ;;
+        *)
+          batch_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    json_file="${batch_args[0]:-}"
     [[ -n "$json_file" ]] || die "batch-create 需要 JSON 数组文件"
     [[ -f "$json_file" ]] || die "batch-create 文件不存在: $json_file"
     require_project_id
-    batch_create_functional_cases "$json_file"
+    if [[ -n "$batch_file_id" ]]; then
+      file_metadata_exists "$batch_file_id" || die "batch-create --file-id 校验失败: 文件元数据不存在或不可用: $batch_file_id"
+    fi
+    batch_create_functional_cases "$json_file" "$batch_file_id"
     ;;
   generate-create)
     if [[ "$resource" == "functional-case" ]]; then
