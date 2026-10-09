@@ -17,11 +17,13 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - **ms.sh 是唯一规范入口**：./scripts/ms.sh <resource> <action> [args]（相对 skills/ 目录）。
 - ms.py 是独立 Python CLI（仅 list/get/create/raw），不被 ms.sh 调用；两者并存，勿假设功能一致。
 - 辅助脚本：ms_generate.py（本地草稿生成）、ms_batch.py（批量写入）、ms_review_summary.py（评审覆盖统计）、ms_case_report.py（结构化 JSON 报告）、ms_case_report_md.py（Markdown 报告，包装 ms_case_report.py）。
+- v2 辅助脚本（skills/scripts/v2/）：ms_generate.py / ms_generate_case.py（草稿生成）、ms_import_helper.py（导入辅助）、ms_split_cases.py（测试用例文件拆分器：docx/pdf/xlsx/xmind → v2 字段契约 JSON 草稿；xlsx/docx/pdf 需可选富依赖，xmind 走 stdlib）。
 
 ## CLI 语法
-- 资源: organization, project, functional-module, functional-template, api-module, functional-case, functional-case-review, case-review, case-review-detail, case-review-module, case-review-user, api, api-case
-- 动作: list, get, create, raw GET|POST <path> [json], generate, batch-create, generate-create, import-generate, import-create
+- 资源: organization, project, functional-module, functional-template, api-module, functional-case, functional-case-review, case-review, case-review-detail, case-review-module, case-review-user, api, api-case, comment, attachment, file
+- 动作: list, get, create, raw GET|POST <path> [json], generate, batch-create, generate-create, import-generate, import-create, template, import, relate, unrelated, relate-demand, split-create, upload, download, delete, exists
 - 顶层: reviewed-summary <projectId> [keyword]; case-report <projectId> <caseId>; case-report-md <projectId> <caseId>
+- v2 新命令（skills/scripts/v2/ms.sh）：functional-case template/import/relate-demand/split-create、file list/get、attachment unrelated——详见 README §8.6 与 skills/SKILL.md。
 
 ## 认证（勿改动签名机制）
 - 每请求签名：明文 "{ACCESS_KEY}|{uuid4}|{毫秒时间戳}"，AES-128-CBC 加密，key=hex(SECRET_KEY)，iv=hex(ACCESS_KEY)，命令：openssl enc -aes-128-cbc -K <keyhex> -iv <ivhex> -base64 -A -nosalt。
@@ -61,6 +63,8 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - 不要把接口定义端点改成单份前缀（v2：`/api/definition/...` 会 404；双份 `/api/api/definition/...` 才有效，`request()` 第 4 参传空串仍回退 `api`）。
 - **一个 `/api` 网关后面有两个后端，单前缀与双前缀命中的是不同服务**（v2 现场实测证实；v3 无此网关结构）：单前缀 `/api/project/list/related` 命中 project-management 服务的 `BaseProjectController`，只返回当前用户**是成员的**项目（可能为空）；双前缀 `/api/api/project/list/{goPage}/{pageSize}` 命中 api-test 服务的 `ExtProjectController`（类级 `@RequestMapping()` 为空前缀、方法级声明完整字面路径），返回**整个工作空间**的项目。单前缀返回空列表 ≠ 项目不存在——排查项目时务必先用双前缀分页列表，不要据单前缀空结果断言「零项目」。
 - 重复运行 import-create/import-generate 报「缺少 definition request」时，不要直接消费导入响应 id（不可查询）——按 name 从 `/api/api/definition/list` 解析持久化 id（v2 已内置）。
+- **tags 裸数组会丢标签**（v2.10 `tags` 是 String 字段）：excel 标签列 / batch-create 载荷 / xmind `tag:` 存储均须为 **JSON 编码的字符串**（`"[\"a\",\"b\"]"`），不是裸数组；普通逗号文本在 excel 导入路径会被服务端静默丢弃为空。
+- **relateFileMetaIds 同调用关联**：上传文件一次到项目文件库（`file create`）后，`batch-create --file-id <fileId>` 即可在同调用完成关联（每条用例注入 `relateFileMetaIds`）；不要为每条用例单独调 `attachment relate`（那是 separate 降级通道，仅当目标实例同调用不生效时使用）。
 
 ## ⚠️ 验证纪律（子代理结论不可直接采信）
 **硬规则：任何「已验证 / 通过 / APPROVED」结论，必须附带可由他人重跑的原始命令输出。**没有输出的结论一律视为未验证。

@@ -372,6 +372,7 @@ cd ~/.agents/skills/metersphere
 ./scripts/v2/ms.sh attachment upload <caseId> <file>
 ./scripts/v2/ms.sh attachment list <caseId>
 ./scripts/v2/ms.sh attachment relate <caseId> <fileId> [<fileId>...]
+./scripts/v2/ms.sh attachment unrelated <caseId> <metadataRefId> [<metadataRefId>...]
 ./scripts/v2/ms.sh attachment download <attachmentId> <isLocal> <outfile>
 ./scripts/v2/ms.sh attachment delete <attachmentId>
 ```
@@ -379,23 +380,28 @@ cd ~/.agents/skills/metersphere
 - `attachment upload` 为 multipart 上传（`sourceId` 参数即 caseId）；`attachment delete` 为 GET 请求。
 - `attachment list` 返回附件元数据（id / name / size / isLocal / creator 等）。
 - `attachment relate` 把**库文件元数据 id** 关联为用例附件（body `{belongId, belongType:"testcase", metadataRefIds:[...]}`）；**只接受库文件 id**——传库 id 成功返回 `{"success":true,"data":null}`，误传「另一条用例的用例内附件行 id」会得 HTTP 500（服务端用法边界）。
+- `attachment unrelated` 为 relate 的配对操作（取消关联，body 同形状；`metadataRefId` 为库文件引用 id）。
 - `attachment download` 需指定 `isLocal`（普通上传的附件为 `true`）。
 
 #### 项目文件库（file）与用例附件共享
 
-v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对象，零拷贝）。`file` 资源仅暴露 create / exists（**不含 list/get**）：
+v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对象，零拷贝）。`file` 资源暴露四个动作（list/get/create/exists）：
 
 ```bash
 ./scripts/v2/ms.sh file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
 ./scripts/v2/ms.sh file exists <fileId> [<fileId>...]
+./scripts/v2/ms.sh file list <projectId> [goPage] [pageSize]
+./scripts/v2/ms.sh file get <fileId> [outfile]
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
 ```
 
 - `file create`：multipart 上传，返回文件元数据 id；服务端**按 name 去重**（同名时英文报 `The file already exists`）。
 - `file exists`：`POST /file/metadata/exists`，载荷为 id 数组；服务端仅回显存在的 id，任一缺失即 zh-CN 报错退出。
+- `file list`：`POST /file/metadata/project/{projectId}/{goPage}/{pageSize}`（body `{}`，默认分页 1/20）。
+- `file get`：`GET /file/metadata/info/{id}`——**返回文件字节流**（非元数据 JSON）；省略 outfile 时输出到 stdout。
 - `attachment relate` 或 `batch-create --file-id` 均接受该库文件元数据 id；后者在写入前把库文件注入每条用例的 `relateFileMetaIds`，**N 条用例共享同一份 MinIO 对象**（attachment list 中 filePath 相同、createTime 相同）。
 - **用例内上传（`attachment upload`）不可共享**：它产生绑定到该用例 sourceId 的行，无法挂到另一条用例（实测 HTTP 500）；跨用例共享只能走 `file create`。
-- **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤的分页 / 列表查询**端点——实测损坏且刻意不暴露（脚本不提供 `file list` / `file get`）。
+- **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤**的查询端点——实测损坏且不暴露；分页列表走 `file list`（v2.10 实测有效）。
 - 清理：删除用例会级联删除其附件关联（删除后 `attachment list` 为 `[]`）；库文件元数据删除可能返回 HTTP 500 却已删除——务必重新查询确认（list / exists 为空）。
 
 #### 未规划用例模块（module 省略）
@@ -410,13 +416,39 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file>
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
 ./scripts/v2/ms.sh functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
+./scripts/v2/ms.sh functional-case template <projectId> [importType] [outfile]
+./scripts/v2/ms.sh functional-case import <projectId> <excelFile> [--import-type Create|Update] [--version-id <id>]
+./scripts/v2/ms.sh functional-case relate-demand <projectId> <demandId> <caseId> [<caseId>...] [--demand-name <name>]
+./scripts/v2/ms.sh functional-case split-create <projectId> <file> [moduleId] [--link-mode same-call|separate]
 ./scripts/v2/ms.sh functional-case delete <caseId>
 ```
 
 - `generate` 本地生成 v2 草稿（`skills/scripts/v2/ms_generate.py`），不写入；`batch-create` 批量写入（JSON 数组文件）；`generate-create` 生成后直接批量写入，一步到位。
 - `batch-create --file-id <fileMetadataId>` 把项目文件库文件注入每条用例的 `relateFileMetaIds`（库文件零拷贝，详见下方「项目文件库」）。
+- `template` 下载 excel 导入模板（二进制 xlsx；`importType` 仅 `Create|Update`，默认 `Create`；省略 outfile 时输出到 stdout）。
+- `import` excel/xmind 导入（multipart 双 part `request`+`file`；`.xmind` 同端点，服务端按扩展名分发到 XmindCaseParser；request 体仅需 `{projectId, importType, ignore:false[, versionId]}`，userId 由服务端自行填充）。
+- `relate-demand` 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出；body `{ids:[...], demandId, demandName}`；`demandId` 为 `other` 时必须提供 `--demand-name`）。
+- `split-create` 一键拆分写入（见下方「测试用例文件拆分写入」）。
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
-- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`。
+- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`。
+
+#### 测试用例文件拆分写入（split-create）
+
+把测试用例文件（docx/pdf/xlsx/xmind）一键拆分为多条用例并关联原文件：
+
+```bash
+python3 skills/scripts/v2/ms_split_cases.py <file> [--format auto|docx|pdf|xlsx|xmind] [-o out.json] [--project-id <id>]
+./scripts/v2/ms.sh functional-case split-create <projectId> <file> [moduleId] [--link-mode same-call|separate]
+
+# 例：拆分 xmind 并写入，原文件关联到全部拆出的用例
+./scripts/v2/ms.sh functional-case split-create <projectId> /path/to/cases.xmind
+# 例：显式指定目标模块 + separate 降级关联
+./scripts/v2/ms.sh functional-case split-create <projectId> /path/to/cases.docx <moduleId> --link-mode separate
+```
+
+- `ms_split_cases.py`：本地拆分器（无网络）。xlsx 按 MeterSphere 导入模板列序解析（需 openpyxl）；docx 按标题层级+表格（需 python-docx）；pdf 按行式启发（需 pdfplumber）；xmind 按 v2.10 XmindCaseParser 语义（`tc:`/`tc-P1:` 用例节点、`pc:`/`rc:`/`tag:` 子节点，stdlib 解析无富依赖）。缺富依赖时报错含 `pip install` 安装提示。输出 v2 字段契约 JSON 数组草稿（缺关键列的行跳过并告警计数）。
+- `split-create` 编排（5 步，中途失败即停并报告已完成步骤，可重跑幂等）：① 拆分 → ② moduleId 解析注入 nodeId（缺省时查模块树按 nodePath 匹配，0 或多匹配告警不自动选并退出）→ ③ 按 name 查重（已存在同名跳过并计数；全部已存在则幂等跳过，不上传不写入）→ ④ 上传原文件到项目文件库一次（复用 `file create`）→ ⑤ `batch-create --file-id` 写入并同调用关联（每条用例 `relateFileMetaIds` 注入原文件 id）。
+- `--link-mode separate` 降级：若目标实例的 `relateFileMetaIds` 同调用关联不生效，改对每个新 caseId 调 `attachment relate`（同一 fileId）。
 
 #### API 定义 → 接口用例（case factory）
 
@@ -450,7 +482,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 #### 查看控制与写入安全
 
 - **查看控制（诚实说明）**：v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅受项目级权限约束（能否查看用例由用例所属项目的 ACL 决定，而非评论 / 附件本身）。任何能查看该用例的人都能看到其全部评论与附件；`type` / `belongId` 只是内容过滤条件，不是可见性控制。
-- **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / `api-case generate-create` / 通用 `create` / `attachment upload` / `attachment relate` / `file create` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。v2 守卫消息为 `错误: 未设置 METERSPHERE_PROJECT_ID，拒绝写入（防止误写硬编码项目）`；v3 为 `错误: 写入操作需要设置 METERSPHERE_PROJECT_ID`（v3 未验证 (source-only)）。
+- **写入安全**：`functional-case batch-create` / `generate-create` / `import` / `relate-demand` / `split-create` / `delete` / `api-case generate-create` / 通用 `create` / `attachment upload` / `attachment relate` / `attachment unrelated` / `file create` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。v2 守卫消息为 `错误: 未设置 METERSPHERE_PROJECT_ID，拒绝写入（防止误写硬编码项目）`；v3 为 `错误: 写入操作需要设置 METERSPHERE_PROJECT_ID`（v3 未验证 (source-only)）。
 - **`ms_batch.py` 已移除硬编码回退**：不再回退到硬编码 projectId / templateId / versionId；缺元素级 `projectId` / `templateId`（且未设 `METERSPHERE_DEFAULT_TEMPLATE_ID`）时抛 zh-CN 错误拒绝。
 
 #### 报告命令（reviewed-summary / case-report）
@@ -533,6 +565,13 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 4. `functional-case generate`
 5. 按 `references/ai-functional-case-prompt.md` 增强
 6. `functional-case batch-create`
+
+### 10.1.1 测试用例文件拆分工作流（docx/pdf/xlsx/xmind）
+
+1. `functional-case template <projectId>` 下载 excel 模板（可选，对照列序）
+2. `functional-case split-create <projectId> <file>` 一键拆分写入并关联原文件
+   - 或分步：`ms_split_cases.py` 拆分 → 按 `references/ai-phabricator-functional-case-prompt.md` 增强 → `batch-create --file-id <fileId>`
+3. Phabricator 工单驱动时按 `references/ai-phabricator-functional-case-prompt.md`（epic→story→tech 工单读取 + 双输入映射）
 
 ### 10.2 接口定义 / 接口用例工作流
 
