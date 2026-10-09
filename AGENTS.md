@@ -59,6 +59,7 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - 不要假设 ms.py 与 ms.sh 功能等价。
 - 不要不设 METERSPHERE_PROJECT_ID 就执行写入类命令。
 - 不要把接口定义端点改成单份前缀（`/api/definition/...` 会 404；双份 `/api/api/definition/...` 才有效，`request()` 第 4 参传空串仍回退 `api`）。
+- **一个 `/api` 网关后面有两个后端，单前缀与双前缀命中的是不同服务**（现场实测证实）：单前缀 `/api/project/list/related` 命中 project-management 服务的 `BaseProjectController`，只返回当前用户**是成员的**项目（可能为空）；双前缀 `/api/api/project/list/{goPage}/{pageSize}` 命中 api-test 服务的 `ExtProjectController`（类级 `@RequestMapping()` 为空前缀、方法级声明完整字面路径），返回**整个工作空间**的项目。单前缀返回空列表 ≠ 项目不存在——排查项目时务必先用双前缀分页列表，不要据单前缀空结果断言「零项目」。
 - 重复运行 import-create/import-generate 报「缺少 definition request」时，不要直接消费导入响应 id（不可查询）——按 name 从 `/api/api/definition/list` 解析持久化 id（v2 已内置）。
 
 ## ⚠️ 验证纪律（子代理结论不可直接采信）
