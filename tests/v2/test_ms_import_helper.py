@@ -65,9 +65,16 @@ class TestResolveSpecToFile(unittest.TestCase):
             os.unlink("/tmp/ms-spec-src.json")
 
     def test_local_existing_file(self):
-        path, name = h.resolve_spec_to_file("/tmp/opencode/springdoc-sample-bookstore.json")
-        self.assertEqual(name, "springdoc-sample-bookstore.json")
-        self.assertTrue(os.path.isabs(path))
+        src = "/tmp/opencode/springdoc-sample-bookstore.json"
+        os.makedirs(os.path.dirname(src), exist_ok=True)
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write('{"openapi": "3.0.0"}')
+        try:
+            path, name = h.resolve_spec_to_file(src)
+            self.assertEqual(name, "springdoc-sample-bookstore.json")
+            self.assertTrue(os.path.isabs(path))
+        finally:
+            os.unlink(src)
 
     def test_nonexistent_path_errors(self):
         with self.assertRaises(ValueError):
