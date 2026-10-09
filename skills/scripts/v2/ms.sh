@@ -65,6 +65,18 @@ API_CASE_TAGS_JSON=""
 [[ -n "${METERSPHERE_FILE_METADATA_EXISTS_PATH:-}" ]] || METERSPHERE_FILE_METADATA_EXISTS_PATH='/file/metadata/exists'
 # 库文件 → 用例关联：POST {belongId, belongType:"testcase", metadataRefIds:[…]}。
 [[ -n "${METERSPHERE_ATTACHMENT_RELATE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_RELATE_PATH='/attachment/testcase/metadata/relate'
+# 库文件 → 用例取消关联（relate 的配对操作）：POST 同形状 {belongId, belongType, metadataRefIds}。
+[[ -n "${METERSPHERE_ATTACHMENT_UNRELATE_PATH:-}" ]] || METERSPHERE_ATTACHMENT_UNRELATE_PATH='/attachment/testcase/metadata/unrelated'
+# 功能用例 excel/xmind 导入（.xmind 同端点，服务端按扩展名分发到 XmindCaseParser，v2.10 TestCaseService.java:1127）。
+[[ -n "${METERSPHERE_CASE_IMPORT_PATH:-}" ]] || METERSPHERE_CASE_IMPORT_PATH='/test/case/import'
+# 功能用例导入模板下载（二进制 xlsx；importType 仅 Create|Update，v2.10 ExcelImportType 枚举）。
+[[ -n "${METERSPHERE_CASE_TEMPLATE_PATH:-}" ]] || METERSPHERE_CASE_TEMPLATE_PATH='/test/case/export/template/{projectId}/{importType}'
+# v2 项目文件库列表/详情（v2.10 FileMetadataController：list=分页 POST、info=GET 返回文件字节流）。
+[[ -n "${METERSPHERE_FILE_METADATA_LIST_PATH:-}" ]] || METERSPHERE_FILE_METADATA_LIST_PATH='/file/metadata/project/{projectId}/{goPage}/{pageSize}'
+[[ -n "${METERSPHERE_FILE_METADATA_INFO_PATH:-}" ]] || METERSPHERE_FILE_METADATA_INFO_PATH='/file/metadata/info/{id}'
+# 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出）：完整字面路径
+# /test/case + /batch/relate/demand（类级 @RequestMapping("/test/case")，v2.10 TestCaseController.java:363）。
+[[ -n "${METERSPHERE_RELATE_DEMAND_PATH:-}" ]] || METERSPHERE_RELATE_DEMAND_PATH='/test/case/batch/relate/demand'
 
 die() { echo "错误: $*" >&2; exit 1; }
 
@@ -296,8 +308,7 @@ resource_paths() {
     attachment)
       echo "$METERSPHERE_ATTACHMENT_LIST_PATH|$METERSPHERE_ATTACHMENT_DOWNLOAD_PATH|$METERSPHERE_ATTACHMENT_UPLOAD_PATH"
       ;;
-    # file 仅 create（+ 批量 exists 校验）；page/name 过滤端点已损坏，不暴露 list/get。
-    file) echo "|$METERSPHERE_FILE_METADATA_CREATE_PATH|";;
+    file) echo "$METERSPHERE_FILE_METADATA_LIST_PATH|$METERSPHERE_FILE_METADATA_INFO_PATH|$METERSPHERE_FILE_METADATA_CREATE_PATH";;
     *)
       die "不支持的资源: $1"
       ;;
@@ -343,6 +354,10 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   create <JSON> <local-file>  (file: 创建项目文件库文件，multipart 上传)
   exists <fileId>...  (file: 批量校验文件元数据 id 是否存在)
   relate <caseId> <fileId>...  (attachment: 将库文件关联为用例附件)
+  unrelated <caseId> <metadataRefId>...  (attachment: 取消库文件与用例附件的关联)
+  template <projectId> [importType] [outfile]  (functional-case: 下载 excel 导入模板，importType 仅 Create|Update)
+  import <projectId> <excelFile> [--import-type Create|Update] [--version-id <id>]  (functional-case: excel/xmind 导入，multipart 双 part)
+  relate-demand <projectId> <demandId> <caseId>... [--demand-name <name>]  (functional-case: 批量关联需求，demandId 为 other 时 --demand-name 必填)
   batch-create <json-array-file> [--file-id <fileMetadataId>]  (functional-case: 可选把库文件关联进每条用例)
   generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
   generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]  (api-case: 额外写入 phabricator 标签，--tags 可重复)
@@ -384,8 +399,14 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms attachment upload <caseId> <file>
   ms attachment list <caseId>
   ms attachment relate <caseId> <fileId> [<fileId>...]
+  ms attachment unrelated <caseId> <metadataRefId> [<metadataRefId>...]
   ms attachment download <attachmentId> <isLocal> <outfile>
   ms attachment delete <attachmentId>
+  ms functional-case template <projectId> [Create|Update] [outfile]
+  ms functional-case import <projectId> <excel-or-xmind-file> --import-type Create
+  ms functional-case relate-demand <projectId> <demandId> <caseId> [<caseId>...]
+  ms file list <projectId> [goPage] [pageSize]
+  ms file get <fileId> [outfile]
   ms file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
   ms file exists <fileId> [<fileId>...]
   ms raw GET /system/version
@@ -1159,7 +1180,6 @@ else:
 
 case "$action" in
   list)
-    [[ "$resource" != "file" ]] || die "file 资源不支持 list/get"
     arg="${1:-}"
     if [[ "$resource" == "organization" ]]; then
       # v2: workspace list 是 GET，无 body
@@ -1217,6 +1237,14 @@ case "$action" in
       resp="$(request POST "$METERSPHERE_ATTACHMENT_LIST_PATH" "{\"belongId\":\"$case_id\",\"belongType\":\"testcase\"}" "$service_prefix")"
       printf '%s\n' "$resp"
       [[ "$resp" != *'"success":false'* ]] || die "attachment list 失败: $resp"
+    elif [[ "$resource" == "file" ]]; then
+      project_id="${arg:-$METERSPHERE_PROJECT_ID}"
+      [[ -n "$project_id" ]] || die "file list 需要 projectId"
+      go_page="${2:-1}"
+      page_size="${3:-20}"
+      file_list_path="${METERSPHERE_FILE_METADATA_LIST_PATH/\{goPage\}/$go_page}"
+      file_list_path="${file_list_path/\{pageSize\}/$page_size}"
+      request POST "$(path_fill "$file_list_path" "$project_id")" "{}" "$service_prefix"
     else
       if [[ -n "$arg" && "$arg" == \{* ]]; then
         body="$(normalize_json_with_defaults "$resource" "$arg")"
@@ -1227,10 +1255,34 @@ case "$action" in
     fi
     ;;
   get)
-    [[ "$resource" != "file" ]] || die "file 资源不支持 list/get"
     id="${1:-}"
     [[ -n "$id" ]] || die "get 需要 id"
-    request GET "$(path_fill "$get_path" "$id")" "" "$service_prefix"
+    if [[ "$resource" == "file" ]]; then
+      outfile="${2:-}"
+      need_base_url
+      need_keys
+      signature="$(generate_signature)"
+      if [[ -n "$outfile" ]]; then
+        curl -sS -o "$outfile" -X GET \
+          -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+          -H "signature: $signature" \
+          "${METERSPHERE_BASE_URL%/}/track$(path_fill "$METERSPHERE_FILE_METADATA_INFO_PATH" "$id")"
+        if grep -q '"success":false' "$outfile" 2>/dev/null; then
+          cat "$outfile" >&2
+          rm -f "$outfile"
+          die "file get 失败"
+        fi
+        bytes="$(wc -c < "$outfile")"
+        echo "已下载 $bytes 字节到 $outfile"
+      else
+        curl -sS -X GET \
+          -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+          -H "signature: $signature" \
+          "${METERSPHERE_BASE_URL%/}/track$(path_fill "$METERSPHERE_FILE_METADATA_INFO_PATH" "$id")"
+      fi
+    else
+      request GET "$(path_fill "$get_path" "$id")" "" "$service_prefix"
+    fi
     ;;
   create)
     if [[ "$resource" == "file" ]]; then
@@ -1511,6 +1563,174 @@ PY
     else
       die "generate-create 仅支持 functional-case / api-case 资源"
     fi
+    ;;
+  template)
+    [[ "$resource" == "functional-case" ]] || die "template 仅支持 functional-case 资源"
+    project_id="${1:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "functional-case template 需要 projectId"
+    import_type="${2:-Create}"
+    [[ "$import_type" == "Create" || "$import_type" == "Update" ]] || die "importType 仅支持 Create|Update（ExcelImportType 枚举）"
+    outfile="${3:-}"
+    need_base_url
+    need_keys
+    signature="$(generate_signature)"
+    template_path="${METERSPHERE_CASE_TEMPLATE_PATH/\{projectId\}/$project_id}"
+    template_path="${template_path/\{importType\}/$import_type}"
+    if [[ -n "$outfile" ]]; then
+      curl -sS -o "$outfile" -X GET \
+        -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+        -H "signature: $signature" \
+        "${METERSPHERE_BASE_URL%/}/track${template_path}"
+      if grep -q '"success":false' "$outfile" 2>/dev/null; then
+        cat "$outfile" >&2
+        rm -f "$outfile"
+        die "functional-case template 下载失败"
+      fi
+      bytes="$(wc -c < "$outfile")"
+      echo "已下载 $bytes 字节到 $outfile"
+    else
+      curl -sS -X GET \
+        -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+        -H "signature: $signature" \
+        "${METERSPHERE_BASE_URL%/}/track${template_path}"
+    fi
+    ;;
+  import)
+    [[ "$resource" == "functional-case" ]] || die "import 仅支持 functional-case 资源"
+    import_type="Create"
+    version_id=""
+    import_args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --import-type)
+          [[ $# -ge 2 ]] || die "--import-type 需要值（Create|Update）"
+          import_type="$2"
+          shift 2
+          ;;
+        --import-type=*)
+          import_type="${1#--import-type=}"
+          shift
+          ;;
+        --version-id)
+          [[ $# -ge 2 ]] || die "--version-id 需要版本 id"
+          version_id="$2"
+          shift 2
+          ;;
+        --version-id=*)
+          version_id="${1#--version-id=}"
+          shift
+          ;;
+        *)
+          import_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    [[ "$import_type" == "Create" || "$import_type" == "Update" ]] || die "importType 仅支持 Create|Update（ExcelImportType 枚举）"
+    project_id="${import_args[0]:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "functional-case import 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+    excel_file="${import_args[1]:-}"
+    [[ -n "$excel_file" ]] || die "functional-case import 需要 excel/xmind 文件"
+    [[ -f "$excel_file" ]] || die "functional-case import 文件不存在: $excel_file"
+    require_project_id
+    import_body="{\"projectId\":\"$project_id\",\"importType\":\"$import_type\",\"ignore\":false"
+    if [[ -n "$version_id" ]]; then
+      import_body="${import_body},\"versionId\":\"$version_id\""
+    fi
+    import_body="${import_body}}"
+    tmp_json="$(mktemp)"
+    printf '%s' "$import_body" > "$tmp_json"
+    need_base_url
+    need_keys
+    signature="$(generate_signature)"
+    resp="$(curl -sS -X POST \
+      -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+      -H "signature: $signature" \
+      -F "request=@${tmp_json};type=application/json" \
+      -F "file=@${excel_file}" \
+      "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_CASE_IMPORT_PATH}")"
+    rm -f "$tmp_json"
+    printf '%s\n' "$resp"
+    [[ "$resp" != *'"success":false'* ]] || die "functional-case import 失败: $resp"
+    ;;
+  unrelated)
+    [[ "$resource" == "attachment" ]] || die "unrelated 仅支持 attachment 资源"
+    case_id="${1:-}"
+    [[ -n "$case_id" ]] || die "attachment unrelated 需要 caseId"
+    shift || true
+    [[ $# -ge 1 ]] || die "attachment unrelated 需要至少一个 metadataRefId（库文件引用 id）"
+    require_project_id
+    body="$(python3 - "$case_id" "$@" <<'PY'
+import json, sys
+print(json.dumps({"belongId": sys.argv[1], "belongType": "testcase", "metadataRefIds": list(sys.argv[2:])}, ensure_ascii=False))
+PY
+)"
+    need_base_url
+    need_keys
+    signature="$(generate_signature)"
+    http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
+      -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+      -H "signature: $signature" \
+      -H "Content-Type: application/json" \
+      -d "$body" \
+      "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_ATTACHMENT_UNRELATE_PATH}")"
+    http_code="${http_out##*$'\n'}"
+    resp="${http_out%$'\n'*}"
+    printf '%s\n' "$resp"
+    [[ "$http_code" == "200" ]] || die "attachment unrelated 失败 (HTTP $http_code): $resp"
+    [[ "$resp" != *'"success":false'* ]] || die "attachment unrelated 失败: $resp"
+    ;;
+  relate-demand)
+    [[ "$resource" == "functional-case" ]] || die "relate-demand 仅支持 functional-case 资源"
+    demand_name=""
+    relate_demand_args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --demand-name)
+          [[ $# -ge 2 ]] || die "--demand-name 需要需求名称"
+          demand_name="$2"
+          shift 2
+          ;;
+        --demand-name=*)
+          demand_name="${1#--demand-name=}"
+          shift
+          ;;
+        *)
+          relate_demand_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    project_id="${relate_demand_args[0]:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "functional-case relate-demand 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+    demand_id="${relate_demand_args[1]:-}"
+    [[ -n "$demand_id" ]] || die "functional-case relate-demand 需要 demandId（需求管理中的第三方平台需求 id）"
+    if [[ ${#relate_demand_args[@]} -lt 3 ]]; then
+      die "functional-case relate-demand 需要至少一个 caseId"
+    fi
+    if [[ "$demand_id" == "other" && -z "$demand_name" ]]; then
+      die "demandId 为 other 时必须提供 --demand-name（v2.10 batchRelateDemand：demandId==other 时 demandName 必填）"
+    fi
+    require_project_id
+    body="$(python3 - "$demand_id" "$demand_name" "${relate_demand_args[@]:2}" <<'PY'
+import json, sys
+print(json.dumps({"ids": list(sys.argv[3:]), "demandId": sys.argv[1], "demandName": sys.argv[2]}, ensure_ascii=False))
+PY
+)"
+    need_base_url
+    need_keys
+    signature="$(generate_signature)"
+    http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
+      -H "accessKey: $METERSPHERE_ACCESS_KEY" \
+      -H "signature: $signature" \
+      -H "Content-Type: application/json" \
+      -d "$body" \
+      "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_RELATE_DEMAND_PATH}")"
+    http_code="${http_out##*$'\n'}"
+    resp="${http_out%$'\n'*}"
+    printf '%s\n' "$resp"
+    [[ "$http_code" == "200" ]] || die "functional-case relate-demand 失败 (HTTP $http_code): $resp"
+    [[ "$resp" != *'"success":false'* ]] || die "functional-case relate-demand 失败: $resp"
     ;;
   upload)
     [[ "$resource" == "attachment" ]] || die "upload 仅支持 attachment 资源"
