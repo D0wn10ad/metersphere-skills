@@ -371,24 +371,50 @@ cd ~/.agents/skills/metersphere
 ```bash
 ./scripts/v2/ms.sh attachment upload <caseId> <file>
 ./scripts/v2/ms.sh attachment list <caseId>
+./scripts/v2/ms.sh attachment relate <caseId> <fileId> [<fileId>...]
 ./scripts/v2/ms.sh attachment download <attachmentId> <isLocal> <outfile>
 ./scripts/v2/ms.sh attachment delete <attachmentId>
 ```
 
 - `attachment upload` 为 multipart 上传（`sourceId` 参数即 caseId）；`attachment delete` 为 GET 请求。
 - `attachment list` 返回附件元数据（id / name / size / isLocal / creator 等）。
+- `attachment relate` 把**库文件元数据 id** 关联为用例附件（body `{belongId, belongType:"testcase", metadataRefIds:[...]}`）；**只接受库文件 id**——传库 id 成功返回 `{"success":true,"data":null}`，误传「另一条用例的用例内附件行 id」会得 HTTP 500（服务端用法边界）。
 - `attachment download` 需指定 `isLocal`（普通上传的附件为 `true`）。
+
+#### 项目文件库（file）与用例附件共享
+
+v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对象，零拷贝）。`file` 资源仅暴露 create / exists（**不含 list/get**）：
+
+```bash
+./scripts/v2/ms.sh file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
+./scripts/v2/ms.sh file exists <fileId> [<fileId>...]
+./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
+```
+
+- `file create`：multipart 上传，返回文件元数据 id；服务端**按 name 去重**（同名时英文报 `The file already exists`）。
+- `file exists`：`POST /file/metadata/exists`，载荷为 id 数组；服务端仅回显存在的 id，任一缺失即 zh-CN 报错退出。
+- `attachment relate` 或 `batch-create --file-id` 均接受该库文件元数据 id；后者在写入前把库文件注入每条用例的 `relateFileMetaIds`，**N 条用例共享同一份 MinIO 对象**（attachment list 中 filePath 相同、createTime 相同）。
+- **用例内上传（`attachment upload`）不可共享**：它产生绑定到该用例 sourceId 的行，无法挂到另一条用例（实测 HTTP 500）；跨用例共享只能走 `file create`。
+- **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤的分页 / 列表查询**端点——实测损坏且刻意不暴露（脚本不提供 `file list` / `file get`）。
+- 清理：删除用例会级联删除其附件关联（删除后 `attachment list` 为 `[]`）；库文件元数据删除可能返回 HTTP 500 却已删除——务必重新查询确认（list / exists 为空）。
+
+#### 未规划用例模块（module 省略）
+
+- 生成 / 写入时省略 module（传 `-` 或空）→ v2 生成器以 `default-module` 占位；`batch-create` 在写入前**按项目实时查询**模块树（`GET /track/case/node/list/{projectId}`），解析出该项目的「未规划用例」节点，并同时填好 `nodeId` 与 `nodePath`。
+- 实测：两个项目分别把全部用例落进各自的「未规划用例」节点（对同一模块树端点做 oracle，nodeId 匹配率 100%）。
 
 #### 需求 → 功能用例（生成写入）
 
 ```bash
 ./scripts/v2/ms.sh functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file>
+./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
 ./scripts/v2/ms.sh functional-case generate-create <projectId> <moduleId> <templateId> <requirement-file>
 ./scripts/v2/ms.sh functional-case delete <caseId>
 ```
 
 - `generate` 本地生成 v2 草稿（`skills/scripts/v2/ms_generate.py`），不写入；`batch-create` 批量写入（JSON 数组文件）；`generate-create` 生成后直接批量写入，一步到位。
+- `batch-create --file-id <fileMetadataId>` 把项目文件库文件注入每条用例的 `relateFileMetaIds`（库文件零拷贝，详见下方「项目文件库」）。
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
 - 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`。
 
@@ -424,7 +450,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 #### 查看控制与写入安全
 
 - **查看控制（诚实说明）**：v2 的评论与附件**没有逐条 / 逐用户的访问控制**——访问仅受项目级权限约束（能否查看用例由用例所属项目的 ACL 决定，而非评论 / 附件本身）。任何能查看该用例的人都能看到其全部评论与附件；`type` / `belongId` 只是内容过滤条件，不是可见性控制。
-- **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / `api-case generate-create` / 通用 `create` / `attachment upload` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。
+- **写入安全**：`functional-case batch-create` / `generate-create` / `delete` / `api-case generate-create` / 通用 `create` / `attachment upload` / `attachment relate` / `file create` 要求显式设置 `METERSPHERE_PROJECT_ID`，未设置时拒绝执行并退出（exit 1），不会回退到硬编码项目 ID。v2 守卫消息为 `错误: 未设置 METERSPHERE_PROJECT_ID，拒绝写入（防止误写硬编码项目）`；v3 为 `错误: 写入操作需要设置 METERSPHERE_PROJECT_ID`（v3 未验证 (source-only)）。
+- **`ms_batch.py` 已移除硬编码回退**：不再回退到硬编码 projectId / templateId / versionId；缺元素级 `projectId` / `templateId`（且未设 `METERSPHERE_DEFAULT_TEMPLATE_ID`）时抛 zh-CN 错误拒绝。
 
 #### 报告命令（reviewed-summary / case-report）
 
@@ -570,9 +597,12 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - 功能用例草稿生成与批量写入
 - OpenAPI 导入草稿生成与批量写入
 - 用例评论（comment）与附件（attachment）管理（v2）
+- 项目文件库（file）与用例附件共享（v2，`file create` + `attachment relate` / `batch-create --file-id`，库文件零拷贝）
+- 未规划用例模块（省略 module 时按项目实时解析「未规划用例」节点）（v2）
 - AI 对话记录格式化并挂载为用例附件（v2）
 - 功能用例删除（v2，含写入安全守卫）
 - API 路径按版本/部署覆盖（`METERSPHERE_*_PATH`，ms.sh / ms.py / 报告脚本均支持）
+- v3 的 file / attachment 资源与 `batch-create --file-id`（**未验证 (source-only)**，本环境无 v3 服务器可连）
 
 当前项目定位仍以：
 
@@ -592,6 +622,28 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - **重复导入报「缺少 definition request」**：fullCoverage 按 path 去重不落新行，但导入响应 `data.data[]` 返回解析阶段新生成的不可查询 id（GET 得 `data:null`）。v2 `import-create`/`import-generate` 已内置按 name 从定义列表解析持久化 id 的修复——重复运行同一 spec 会干净跳过（EXIT 0），不再失败。
 - **勿消费导入响应内联 request**：`apiDefinitionId` 必须来自持久化 id 的 detail，否则用例归属错误。
 - **spec 端点 name 变更再导入**：会更新既有定义 name（id 不变），旧变体名不匹配 → 生成新变体用例（重跑跳过，幂等成立）。
+
+### 13.1 文件库 / 附件 / 未规划模块（v2，现场实测证实）
+
+- **包装响应形状**：成功统一 `{"success":true,"data":...}`；`attachment relate` 成功时 `data` 为 `null`。
+- **`attachment relate` 只接受库文件元数据 id**：传库 id → `{"success":true,"data":null}`；误传用例内附件行 id（另一用例 attachment list 里的 id）→ HTTP 500 `{"status":500,"error":"Internal Server Error","path":"/attachment/testcase/metadata/relate"}`——服务端用法边界。
+- **用例内上传不可共享**：`attachment upload` 的行绑定该用例 sourceId；跨用例共享必须走 `file create` + relate / `--file-id`。
+- **库文件零拷贝**：`batch-create --file-id` 让 N 条用例共享同一份 MinIO 对象（filePath 相同、createTime 相同）。
+- **库文件按 name 去重**：同名创建失败，英文消息 `The file already exists`。
+- **库文件删除可能 500 却已删除**：务必重新查询确认（list / exists 为空）。
+- **附件关联随用例级联删除**：删除用例后其 `attachment list` 为 `[]`。
+- **`POST /track/test/case/list/{n}/{size}` 要求请求体内带 `projectId`**，否则不能按项目过滤。
+- **`batch-create` 逐元素非原子**：中途失败先前的元素已落库、不回滚；失败体含 `"success":false` 时以 zh-CN 报错退出（exit 1），否则原样打印未包裹 zh-CN 的原始服务端错误后继续，末尾打印 `batch-create 完成: 共 N 个元素，成功创建 M 个用例`（exit 0，裸错误属已知 cosmetic gap）。
+- **反模式（禁止）**：`file` 资源的按名称过滤的分页 / 列表查询端点实测损坏，脚本刻意不暴露 `file list` / `file get`。
+
+### 13.2 v3 file / attachment（未验证 (source-only)）
+
+> 本环境无 v3 服务器可连，v3-only 路径返回 404。以下路径来源 v3.x 源码，**全部为 `未验证 (source-only)`**。
+
+- `file upload` / `file page` / `file delete` 分别走 `POST /project/file/upload` / `POST /project/file/page` / `POST /project/file/delete`——`未验证 (source-only)`。
+- `attachment upload` / `attachment page` / `attachment delete` 分别走 `POST /attachment/upload/file` / `POST /attachment/page` / `POST /attachment/delete/file`——`未验证 (source-only)`。
+- `attachment relate` 复用 `attachment upload` 端点并携带 `{projectId, caseId, fileIds}`——`未验证 (source-only)`。
+- v3 省略 module → 字面量 `root`——`未验证 (source-only)`。
 
 ---
 
@@ -641,6 +693,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - 校验点：本地 MeterSphere 检出 `cf7a649a71` 与 `origin/v3.x`、tag `v3.6.9-lts` 指向同一提交。
 - v1 使用的路径在该树上均存在：`/api/case/add`、`/functional/case/add`、`/system/version/current`。
 - `ApiTestCaseService.addCase()` 内 `testCase.setId(IDGenerator.nextStr())`——**由 v3.x 服务端自行生成用例 ID**，因此 v1 写入时无需客户端指定 ID。
+- v1 新增的 `file` / `attachment` 资源（`file upload|page|delete`、`attachment upload|relate|page|delete`）路径来自 v3.x 源码 `FileManagementController` / `FunctionalCaseAttachmentController`（`/project/file/*`、`/attachment/*`），但**本环境无 v3 服务器可连，全部 `未验证 (source-only)`**（`skills/scripts/ms.sh` 内 `未验证` 计数 19）。
 
 ### 16.2 `skills/scripts/v2/` → MeterSphere v2.10 LTS
 
