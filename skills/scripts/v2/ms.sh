@@ -2,6 +2,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 自调用入口（split-create 编排复用既有 file create / batch-create / attachment relate）。
+MS_SH_SELF="${BASH_SOURCE[0]}"
 # v2 脚本位于 scripts/v2/，比主包深一层：技能根目录（.env 所在）为上两级。
 SKILL_DIR="$(dirname "$(dirname "$SCRIPT_DIR")")"
 ENV_FILE="${SKILL_DIR}/.env"
@@ -359,6 +361,7 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   import <projectId> <excelFile> [--import-type Create|Update] [--version-id <id>]  (functional-case: excel/xmind 导入，multipart 双 part)
   relate-demand <projectId> <demandId> <caseId>... [--demand-name <name>]  (functional-case: 批量关联需求，demandId 为 other 时 --demand-name 必填)
   batch-create <json-array-file> [--file-id <fileMetadataId>]  (functional-case: 可选把库文件关联进每条用例)
+  split-create <projectId> <file> [moduleId] [--link-mode same-call|separate]  (functional-case: docx/pdf/xlsx/xmind 一键拆分写入并关联原文件)
   generate-create <projectId> [<definitionId>...]  (api-case: 定义 → 接口用例批量生成写入)
   generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]  (api-case: 额外写入 phabricator 标签，--tags 可重复)
   import-generate <projectId> <spec> [moduleId] (api: 导入 spec 生成定义+用例计划，不写入用例)
@@ -378,7 +381,10 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms functional-case create '{"name":"登录用例","nodeId":"<moduleId>","projectId":"<projectId>"}'
   ms functional-case generate <projectId> <moduleId> <templateId> <requirement-file>
   ms functional-case batch-create <json-array-file>
-  ms functional-case batch-create <json-array-file> --file-id <fileMetadataId>
+   ms functional-case batch-create <json-array-file> --file-id <fileMetadataId>
+   ms functional-case split-create <projectId> /path/to/cases.xlsx
+   ms functional-case split-create <projectId> /path/to/cases.xmind <moduleId>
+   ms functional-case split-create <projectId> /path/to/cases.docx - --link-mode separate
   ms functional-case generate-create <projectId> - <templateId> <requirement-file>
   ms functional-case delete <caseId>
   ms case-review list '{"projectId":"<your-project-id>"}'
@@ -658,6 +664,222 @@ elif isinstance(data, dict) and data.get("id"):
     fi
   done < "$tmp_dir/elements.jsonl"
   echo "batch-create 完成: 共 $count 个元素，成功创建 $created 个用例"
+  rm -rf "$tmp_dir"
+  trap - EXIT
+}
+
+# 一键拆分写入：测试用例文件（docx/pdf/xlsx/xmind）→ ms_split_cases.py 拆分草稿 →
+# moduleId 解析注入 nodeId → name 查重 → 项目文件上传原文件一次（复用 file create）→
+# batch-create --file-id 写入并同调用关联（复用既有实现）→ 计数清单。
+# 中途失败即停：已完成步骤打印到 stdout，die 消息携带失败步骤（可重跑，幂等）。
+# --link-mode separate 降级：对每个新 caseId 调既有 attachment relate（同一 fileId）。
+split_create_functional_cases() {
+  local project_id="$1" source_file="$2" module_id="$3" link_mode="${4:-same-call}"
+  [[ -f "$source_file" ]] || die "split-create 文件不存在: $source_file"
+  [[ "$link_mode" == "same-call" || "$link_mode" == "separate" ]] || die "split-create link-mode 仅支持 same-call|separate"
+  require_project_id
+  local tmp_dir
+  tmp_dir="$(mktemp -d)"
+  trap "rm -rf '$tmp_dir'" EXIT
+
+  echo "步骤 ①/⑤ 拆分 $source_file"
+  python3 "$SCRIPT_DIR/ms_split_cases.py" "$source_file" --project-id "$project_id" -o "$tmp_dir/drafts.json" || {
+    die "split-create 步骤 ① 拆分失败（已完成步骤：无）"
+  }
+  local total
+  total="$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1], encoding="utf-8"))))' "$tmp_dir/drafts.json")"
+  echo "步骤 ①/⑤ 完成: 拆分 $total 条草稿"
+
+  echo "步骤 ②/⑤ 解析 moduleId 并注入 nodeId"
+  cat > "$tmp_dir/inject_node.py" <<'PY'
+import json, sys
+drafts_path, module_id, tree_raw = sys.argv[1], sys.argv[2], sys.argv[3]
+with open(drafts_path, encoding="utf-8") as fh:
+    drafts = json.load(fh)
+if module_id not in ("", "-"):
+    for d in drafts:
+        d["nodeId"] = module_id
+else:
+    try:
+        resp = json.loads(tree_raw)
+    except json.JSONDecodeError:
+        resp = None
+    tree = resp.get("data") if isinstance(resp, dict) else resp
+    if not isinstance(tree, list):
+        tree = [tree]
+    paths = {}
+    def walk(items, prefix):
+        for n in items or []:
+            if not isinstance(n, dict):
+                continue
+            name = str(n.get("name") or "").strip()
+            if name:
+                full = prefix + "/" + name
+                paths.setdefault(full, n.get("id"))
+                paths.setdefault(full.lstrip("/"), n.get("id"))
+                walk(n.get("children"), full)
+            else:
+                walk(n.get("children"), prefix)
+    walk(tree, "")
+    unresolved = []
+    for d in drafts:
+        np = str(d.get("nodePath") or "").strip().lstrip("/")
+        candidates = []
+        if np in paths:
+            candidates.append(paths[np])
+        else:
+            for p, nid in paths.items():
+                if p.endswith("/" + np) and nid:
+                    candidates.append(nid)
+        candidates = [c for c in dict.fromkeys(candidates) if c]
+        if len(candidates) == 1:
+            d["nodeId"] = candidates[0]
+        else:
+            unresolved.append(np)
+    if unresolved:
+        print("ERR:" + ", ".join(sorted(set(unresolved))))
+        sys.exit(0)
+with open(drafts_path, "w", encoding="utf-8") as fh:
+    json.dump(drafts, fh, ensure_ascii=False)
+PY
+  local module_tree="" inject_out
+  if [[ -z "$module_id" || "$module_id" == "-" ]]; then
+    module_tree="$(request GET "$(path_fill "$METERSPHERE_FUNCTIONAL_MODULE_TREE_PATH" "$project_id")" "" "track")" || {
+      die "split-create 步骤 ② 模块树查询失败（已完成步骤：① 拆分 $total 条草稿）"
+    }
+  fi
+  inject_out="$(python3 "$tmp_dir/inject_node.py" "$tmp_dir/drafts.json" "$module_id" "$module_tree")" || {
+    die "split-create 步骤 ② moduleId 解析失败（已完成步骤：① 拆分 $total 条草稿）"
+  }
+  if [[ "$inject_out" == ERR:* ]]; then
+    die "split-create 步骤 ② 以下 nodePath 在模块树中 0 或多个匹配，不自动选择: ${inject_out#ERR:}（已完成步骤：① 拆分 $total 条草稿）"
+  fi
+  echo "步骤 ②/⑤ 完成: moduleId 解析注入"
+
+  echo "步骤 ③/⑤ 按 name 查重"
+  cat > "$tmp_dir/dedup_filter.py" <<'PY'
+import json, sys, urllib.error, urllib.request
+drafts_path, project_id, base_url, access_key, signature, list_path = sys.argv[1:7]
+with open(drafts_path, encoding="utf-8") as fh:
+    drafts = json.load(fh)
+names, go_page, page_size = [], 1, 100
+while True:
+    url = "%s/track%s" % (base_url, list_path.replace("{goPage}", str(go_page)).replace("{pageSize}", str(page_size)))
+    body = json.dumps({"projectId": project_id}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("accessKey", access_key)
+    req.add_header("signature", signature)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print("ERR:HTTP %d %s" % (e.code, e.reason)); sys.exit(0)
+    except urllib.error.URLError as e:
+        print("ERR:%s" % e.reason); sys.exit(0)
+    data = (doc or {}).get("data")
+    batch, page_count = [], None
+    if isinstance(data, list):
+        batch, page_count = data, None
+    elif isinstance(data, dict):
+        batch = data.get("listObject") or []
+        page_count = data.get("pageCount")
+    else:
+        print("ERR:响应 data 结构无法识别"); sys.exit(0)
+    for it in batch:
+        nm = it.get("name") if isinstance(it, dict) else None
+        if nm:
+            names.append(str(nm))
+    if page_count is None:
+        if len(batch) < page_size:
+            break
+    elif go_page >= int(page_count or 1):
+        break
+    go_page += 1
+existing = set(names)
+kept, skipped = [], []
+for d in drafts:
+    name = str(d.get("name") or "").strip()
+    if name in existing:
+        skipped.append(name)
+    else:
+        kept.append(d)
+with open(drafts_path, "w", encoding="utf-8") as fh:
+    json.dump(kept, fh, ensure_ascii=False)
+print(json.dumps({"kept": len(kept), "skipped": len(skipped)}, ensure_ascii=False))
+PY
+  need_base_url
+  need_keys
+  local signature dedup_out
+  signature="$(generate_signature)"
+  dedup_out="$(python3 "$tmp_dir/dedup_filter.py" "$tmp_dir/drafts.json" "$project_id" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH")" || {
+    die "split-create 步骤 ③ 查重查询失败: ${dedup_out#ERR:}（已完成步骤：① 拆分 $total 条草稿、② moduleId 注入）"
+  }
+  if [[ "$dedup_out" == ERR:* ]]; then
+    die "split-create 步骤 ③ 查重查询失败: ${dedup_out#ERR:}（已完成步骤：① 拆分 $total 条草稿、② moduleId 注入）"
+  fi
+  local kept_count skipped_count
+  kept_count="$(printf '%s' "$dedup_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["kept"])')"
+  skipped_count="$(printf '%s' "$dedup_out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["skipped"])')"
+  echo "步骤 ③/⑤ 完成: 去重跳过 $skipped_count 条，待写入 $kept_count 条"
+
+  if [[ "$kept_count" -eq 0 ]]; then
+    echo "split-create 完成: 拆分 $total 条 / 去重跳过 $skipped_count 条 / 写入 0 条（全部已存在，幂等跳过）"
+    rm -rf "$tmp_dir"
+    trap - EXIT
+    return 0
+  fi
+
+  echo "步骤 ④/⑤ 上传原文件到项目文件库"
+  local file_name file_body upload_out file_id
+  file_name="$(basename "$source_file")"
+  file_body="{\"id\":\"$(python3 -c 'import uuid; print(uuid.uuid4())')\",\"projectId\":\"$project_id\",\"storage\":\"MINIO\",\"name\":\"$file_name\"}"
+  upload_out="$(bash "$MS_SH_SELF" file create "$file_body" "$source_file")" || {
+    printf '%s\n' "$upload_out" >&2
+    die "split-create 步骤 ④ 项目文件上传失败（已完成步骤：① 拆分 $total 条草稿、② moduleId 注入、③ 查重跳过 $skipped_count 条）"
+  }
+  file_id="$(printf '%s' "$upload_out" | python3 -c 'import json,sys
+try:
+    d = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict):
+    d = d.get("data")
+if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get("id"):
+    print(d[0]["id"])
+' 2>/dev/null || true)"
+  [[ -n "$file_id" ]] || die "split-create 步骤 ④ 上传响应未包含文件 id（已完成步骤：① 拆分 $total 条草稿、② moduleId 注入、③ 查重跳过 $skipped_count 条）"
+  echo "步骤 ④/⑤ 完成: fileId=$file_id"
+
+  echo "步骤 ⑤/⑤ batch-create 写入并关联原文件"
+  local batch_out created_count=0
+  batch_out="$(bash "$MS_SH_SELF" functional-case batch-create "$tmp_dir/drafts.json" --file-id "$file_id")" || {
+    printf '%s\n' "$batch_out" >&2
+    die "split-create 步骤 ⑤ batch-create 失败（已完成步骤：① 拆分 $total 条草稿、② moduleId 注入、③ 查重跳过 $skipped_count 条、④ 上传 fileId=$file_id）"
+  }
+  printf '%s\n' "$batch_out"
+  local case_ids
+  case_ids="$(printf '%s\n' "$batch_out" | python3 -c 'import sys
+ids = [line[len("已创建用例: "):].strip() for line in sys.stdin if line.startswith("已创建用例: ")]
+print("\n".join(ids))
+' 2>/dev/null || true)"
+  if [[ -n "$case_ids" ]]; then
+    created_count="$(printf '%s\n' "$case_ids" | wc -l | tr -d ' ')"
+  fi
+
+  if [[ "$link_mode" == "separate" ]]; then
+    echo "separate 模式: 逐条关联附件（attachment relate）"
+    local related=0
+    for cid in $case_ids; do
+      bash "$MS_SH_SELF" attachment relate "$cid" "$file_id" || {
+        die "split-create separate 关联失败: caseId=$cid（已完成步骤：① 拆分 $total、② moduleId 注入、③ 查重跳过 $skipped_count、④ 上传 fileId=$file_id、⑤ 写入 $created_count 条）"
+      }
+      related=$((related + 1))
+    done
+    echo "separate 模式完成: 关联 $related 条用例附件"
+  fi
+
+  echo "split-create 完成: 拆分 $total 条 / 去重跳过 $skipped_count 条 / 写入 $created_count 条 / fileId=$file_id"
   rm -rf "$tmp_dir"
   trap - EXIT
 }
@@ -1731,6 +1953,35 @@ PY
     printf '%s\n' "$resp"
     [[ "$http_code" == "200" ]] || die "functional-case relate-demand 失败 (HTTP $http_code): $resp"
     [[ "$resp" != *'"success":false'* ]] || die "functional-case relate-demand 失败: $resp"
+    ;;
+  split-create)
+    [[ "$resource" == "functional-case" ]] || die "split-create 仅支持 functional-case 资源"
+    link_mode="same-call"
+    split_create_args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --link-mode)
+          [[ $# -ge 2 ]] || die "--link-mode 需要值（same-call|separate）"
+          link_mode="$2"
+          shift 2
+          ;;
+        --link-mode=*)
+          link_mode="${1#--link-mode=}"
+          shift
+          ;;
+        *)
+          split_create_args+=("$1")
+          shift
+          ;;
+      esac
+    done
+    project_id="${split_create_args[0]:-${METERSPHERE_PROJECT_ID:-}}"
+    [[ -n "$project_id" ]] || die "functional-case split-create 需要 projectId 参数或设置 METERSPHERE_PROJECT_ID（防止误写硬编码项目）"
+    source_file="${split_create_args[1]:-}"
+    [[ -n "$source_file" ]] || die "functional-case split-create 需要 docx/pdf/xlsx/xmind 文件"
+    module_id="${split_create_args[2]:--}"
+    split_create_functional_cases "$project_id" "$source_file" "$module_id" "$link_mode"
+    exit $?
     ;;
   upload)
     [[ "$resource" == "attachment" ]] || die "upload 仅支持 attachment 资源"
