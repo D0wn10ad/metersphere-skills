@@ -76,6 +76,8 @@ API_CASE_TAGS_JSON=""
 # v2 项目文件库列表/详情（v2.10 FileMetadataController：list=分页 POST、info=GET 返回文件字节流）。
 [[ -n "${METERSPHERE_FILE_METADATA_LIST_PATH:-}" ]] || METERSPHERE_FILE_METADATA_LIST_PATH='/file/metadata/project/{projectId}/{goPage}/{pageSize}'
 [[ -n "${METERSPHERE_FILE_METADATA_INFO_PATH:-}" ]] || METERSPHERE_FILE_METADATA_INFO_PATH='/file/metadata/info/{id}'
+# v2 项目文件库文件夹树（v2.10 FileModuleController；body 里的 moduleId=文件夹 id，实测）。
+[[ -n "${METERSPHERE_FILE_MODULE_LIST_PATH:-}" ]] || METERSPHERE_FILE_MODULE_LIST_PATH='/file/module/list/{projectId}'
 # 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出）：完整字面路径
 # /test/case + /batch/relate/demand（类级 @RequestMapping("/test/case")，v2.10 TestCaseController.java:363）。
 [[ -n "${METERSPHERE_RELATE_DEMAND_PATH:-}" ]] || METERSPHERE_RELATE_DEMAND_PATH='/test/case/batch/relate/demand'
@@ -220,7 +222,7 @@ service_prefix() {
   # v2 网关 discovery locator：/{serviceId}/** 剥掉首段 serviceId 后转发到对应微服务。
   # track：功能模块/功能用例/评审系；project：功能模板；其余（含 raw）走 api。
   case "$1" in
-    functional-module|functional-case|functional-case-review|case-review|case-review-detail|case-review-module|case-review-user|comment|attachment|file)
+    functional-module|functional-case|functional-case-review|case-review|case-review-detail|case-review-module|case-review-user|comment|attachment|file|file-module)
       echo "track"
       ;;
     functional-template)
@@ -311,6 +313,9 @@ resource_paths() {
       echo "$METERSPHERE_ATTACHMENT_LIST_PATH|$METERSPHERE_ATTACHMENT_DOWNLOAD_PATH|$METERSPHERE_ATTACHMENT_UPLOAD_PATH"
       ;;
     file) echo "$METERSPHERE_FILE_METADATA_LIST_PATH|$METERSPHERE_FILE_METADATA_INFO_PATH|$METERSPHERE_FILE_METADATA_CREATE_PATH";;
+    file-module)
+      echo "$METERSPHERE_FILE_MODULE_LIST_PATH||"
+      ;;
     *)
       die "不支持的资源: $1"
       ;;
@@ -348,6 +353,7 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   comment
   attachment
   file
+  file-module
 
 动作:
   list [关键词|JSON]
@@ -413,7 +419,8 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms functional-case relate-demand <projectId> <demandId> <caseId> [<caseId>...]
   ms file list <projectId> [goPage] [pageSize]
   ms file get <fileId> [outfile]
-  ms file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
+   ms file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
+   ms file-module list <projectId>
   ms file exists <fileId> [<fileId>...]
   ms raw GET /system/version
 EOF
@@ -1467,6 +1474,10 @@ case "$action" in
       file_list_path="${METERSPHERE_FILE_METADATA_LIST_PATH/\{goPage\}/$go_page}"
       file_list_path="${file_list_path/\{pageSize\}/$page_size}"
       request POST "$(path_fill "$file_list_path" "$project_id")" "{}" "$service_prefix"
+    elif [[ "$resource" == "file-module" ]]; then
+      project_id="${arg:-$METERSPHERE_PROJECT_ID}"
+      [[ -n "$project_id" ]] || die "file-module list 需要 projectId"
+      request GET "$(path_fill "$METERSPHERE_FILE_MODULE_LIST_PATH" "$project_id")" "" "$service_prefix"
     else
       if [[ -n "$arg" && "$arg" == \{* ]]; then
         body="$(normalize_json_with_defaults "$resource" "$arg")"

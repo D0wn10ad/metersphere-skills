@@ -23,7 +23,7 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - 资源: organization, project, functional-module, functional-template, api-module, functional-case, functional-case-review, case-review, case-review-detail, case-review-module, case-review-user, api, api-case, comment, attachment, file
 - 动作: list, get, create, raw GET|POST <path> [json], generate, batch-create, generate-create, import-generate, import-create, template, import, relate, unrelated, relate-demand, split-create, upload, download, delete, exists
 - 顶层: reviewed-summary <projectId> [keyword]; case-report <projectId> <caseId>; case-report-md <projectId> <caseId>
-- v2 新命令（skills/scripts/v2/ms.sh）：functional-case template/import/relate-demand/split-create、file list/get、attachment unrelated——详见 README §8.6 与 skills/SKILL.md。
+- v2 新命令（skills/scripts/v2/ms.sh）：functional-case template/import/relate-demand/split-create、file list/get、file-module list、attachment unrelated——详见 README §8.6 与 skills/SKILL.md。
 
 ## 认证（勿改动签名机制）
 - 每请求签名：明文 "{ACCESS_KEY}|{uuid4}|{毫秒时间戳}"，AES-128-CBC 加密，key=hex(SECRET_KEY)，iv=hex(ACCESS_KEY)，命令：openssl enc -aes-128-cbc -K <keyhex> -iv <ivhex> -base64 -A -nosalt。

@@ -385,7 +385,7 @@ METERSPHERE_DEFAULT_VERSION_ID=  # 默认版本 ID (避免使用硬编码值)
 - `relate-demand`：批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出；body `{ids:[...], demandId, demandName}`；`demandId` 为 `other` 时必须提供 `--demand-name`）。
 - `split-create`：一键拆分写入（见下节）。
 - `delete`：删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
-- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`。
+- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`；excel 模板 + 原文件共享关联（含文件夹选择）可参考 `references/ai-excel-template-shared-attachment-prompt.md`。
 
 ### 3.1 测试用例文件拆分写入（split-create，v2）
 
@@ -446,12 +446,14 @@ v2 的「项目文件库」文件可被多个用例共享（同一份 MinIO 对�
 ./scripts/v2/ms.sh file exists <fileId> [<fileId>...]
 ./scripts/v2/ms.sh file list <projectId> [goPage] [pageSize]
 ./scripts/v2/ms.sh file get <fileId> [outfile]
+./scripts/v2/ms.sh file-module list <projectId>
 ```
 
-- `file create`：multipart 上传（`request=FileMetadataCreateRequest` 字段 + `file=@` 文件字段），返回文件元数据 id；服务端**按 name 去重**（已存在同名文件时英文报 `The file already exists`）。
+- `file create`：multipart 上传（`request=FileMetadataCreateRequest` 字段 + `file=@` 文件字段），返回文件元数据 id；服务端**按 name 去重**（已存在同名文件时英文报 `The file already exists`）；body 加 `moduleId` 可指定**文件夹**（`file-module list` 解析，缺省省略该键 = 根目录）。
 - `file exists`：`POST /file/metadata/exists`，载荷为 id 数组；服务端仅回显存在的 id，全部存在返回 0，任一缺失以 zh-CN 报错退出。
 - `file list`：`POST /file/metadata/project/{projectId}/{goPage}/{pageSize}`（body `{}`，默认分页 1/20）。
 - `file get`：`GET /file/metadata/info/{id}`——**返回文件字节流**（非元数据 JSON）；省略 outfile 时输出到 stdout。
+- `file-module list`：`GET /file/module/list/{projectId}`——项目文件库**文件夹树**（body 里的 `moduleId` 即此处的文件夹 id；与功能用例模块 `functional-module` 是两个不同体系，勿混用）。
 - 库文件挂到**已创建**的用例：`./scripts/v2/ms.sh attachment relate <caseId> <fileId> [<fileId>...]`（body `{belongId, belongType:"testcase", metadataRefIds:[...]}`）。
 - **`attachment relate` 只接受库文件元数据 id**：传库 id 返回 `{"success":true,"data":null}`；若误传「另一条用例的用例内附件行 id」（取自该用例 attachment list）会得到 HTTP 500（`/attachment/testcase/metadata/relate`）——服务端用法边界，不是客户端缺陷。
 - 批量创建时一次性注入：`./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>`，把库文件写入每条用例的 `relateFileMetaIds`。v3 入口 `./scripts/ms.sh functional-case batch-create <json-file> --file-id <fileMetadataId>` 则透传给 `ms_batch.py --attach-file-id <id>`（`未验证 (source-only)`）。

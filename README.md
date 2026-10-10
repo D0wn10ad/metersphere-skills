@@ -392,13 +392,15 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 ./scripts/v2/ms.sh file exists <fileId> [<fileId>...]
 ./scripts/v2/ms.sh file list <projectId> [goPage] [pageSize]
 ./scripts/v2/ms.sh file get <fileId> [outfile]
+./scripts/v2/ms.sh file-module list <projectId>
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
 ```
 
-- `file create`：multipart 上传，返回文件元数据 id；服务端**按 name 去重**（同名时英文报 `The file already exists`）。
+- `file create`：multipart 上传，返回文件元数据 id；服务端**按 name 去重**（同名时英文报 `The file already exists`）；body 加 `moduleId` 可指定**文件夹**（`file-module list` 解析，缺省省略该键 = 根目录）。
 - `file exists`：`POST /file/metadata/exists`，载荷为 id 数组；服务端仅回显存在的 id，任一缺失即 zh-CN 报错退出。
 - `file list`：`POST /file/metadata/project/{projectId}/{goPage}/{pageSize}`（body `{}`，默认分页 1/20）。
 - `file get`：`GET /file/metadata/info/{id}`——**返回文件字节流**（非元数据 JSON）；省略 outfile 时输出到 stdout。
+- `file-module list`：`GET /file/module/list/{projectId}`——项目文件库**文件夹树**（body 里的 `moduleId` 即此处的文件夹 id；与功能用例模块 `functional-module` 是两个不同体系，勿混用）。
 - `attachment relate` 或 `batch-create --file-id` 均接受该库文件元数据 id；后者在写入前把库文件注入每条用例的 `relateFileMetaIds`，**N 条用例共享同一份 MinIO 对象**（attachment list 中 filePath 相同、createTime 相同）。
 - **用例内上传（`attachment upload`）不可共享**：它产生绑定到该用例 sourceId 的行，无法挂到另一条用例（实测 HTTP 500）；跨用例共享只能走 `file create`。
 - **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤**的查询端点——实测损坏且不暴露；分页列表走 `file list`（v2.10 实测有效）。
@@ -430,7 +432,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 - `relate-demand` 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出；body `{ids:[...], demandId, demandName}`；`demandId` 为 `other` 时必须提供 `--demand-name`）。
 - `split-create` 一键拆分写入（见下方「测试用例文件拆分写入」）。
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
-- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`。
+- 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`；excel 模板 + 原文件共享关联（含文件夹选择）可参考 `references/ai-excel-template-shared-attachment-prompt.md`。
 
 #### 测试用例文件拆分写入（split-create）
 

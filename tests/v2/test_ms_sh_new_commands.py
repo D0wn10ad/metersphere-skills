@@ -112,6 +112,11 @@ class RecordingHandler(BaseHTTPRequestHandler):
         if m:
             self._send_bytes(200, FILE_BYTES)
             return
+        if re.match(r"^/track/file/module/list/[^/?]+$", self.path):
+            self._send(200, {"success": True, "data": [
+                {"id": "folder-1", "name": "测试附件", "parentId": None,
+                 "children": []}]})
+            return
         self._send(404, {"error": "not found: %s" % self.path})
 
     def do_POST(self):
@@ -372,6 +377,28 @@ def test_file_get_downloads_bytes(recorder, tmp_path):
              if "/file/metadata/info/" in path]
     assert paths == ["/track/file/metadata/info/file-9"], (
         "file get 路径不符：%s" % paths)
+
+
+def test_file_module_list_returns_folder_tree(recorder):
+    """file-module list 走 GET /file/module/list/{projectId}（文件夹树，moduleId=文件夹 id）。"""
+    proc = run_ms_sh(["file-module", "list", PROJECT_ID], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    paths = [path for _m, path, _b in recorder.requests
+             if "/file/module/list/" in path]
+    assert paths == ["/track/file/module/list/%s" % PROJECT_ID], (
+        "file-module list 路径不符：%s" % paths)
+    doc = json.loads(proc.stdout)
+    assert doc["data"][0]["id"] == "folder-1"
+    assert doc["data"][0]["name"] == "测试附件"
+
+
+def test_file_module_list_without_project_dies(recorder):
+    """无 projectId 时 die（zh-CN），不发请求。"""
+    proc = run_ms_sh(["file-module", "list"], recorder.base_url, project_id="")
+    assert proc.returncode != 0
+    assert "file-module list 需要 projectId" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not [p for _m, p, _b in recorder.requests
+                if "/file/module/list/" in p]
 
 
 # --------------------------------------------------------------------------
