@@ -1587,6 +1587,62 @@ print("\n".join(names))
 PY
 }
 
+# 分页循环拉全并合并：body 的 pageSize 仅作每页大小，goPage 由脚本循环控制，
+# 输出 {"success":true,"data":[全部页合并后的数组]}。用法: paged_post_list <service_prefix> <list_path> <body_json>
+paged_post_list() {
+  local prefix="$1" list_path="$2" body_raw="$3"
+  need_base_url
+  need_keys
+  local signature
+  signature="$(generate_signature)"
+  python3 - "$prefix" "$list_path" "$body_raw" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" <<'PY'
+import json, sys, urllib.error, urllib.request
+prefix, list_path, body_raw, base_url, access_key, signature = sys.argv[1:7]
+try:
+    user_body = json.loads(body_raw)
+    if not isinstance(user_body, dict):
+        raise ValueError
+except Exception:
+    print("ERR:list body 需为 JSON 对象", file=sys.stderr); sys.exit(1)
+if not user_body.get("projectId"):
+    print("ERR:list body 需要 projectId", file=sys.stderr); sys.exit(1)
+page_size = int(user_body.get("pageSize") or 100)
+items, go_page = [], 1
+while True:
+    url = "%s/%s%s" % (base_url, prefix, list_path.replace("{goPage}", str(go_page)).replace("{pageSize}", str(page_size)))
+    data_bytes = json.dumps(user_body, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=data_bytes, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("accessKey", access_key)
+    req.add_header("signature", signature)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print("ERR:HTTP %d %s" % (e.code, e.reason), file=sys.stderr); sys.exit(1)
+    except urllib.error.URLError as e:
+        print("ERR:%s" % e.reason, file=sys.stderr); sys.exit(1)
+    if isinstance(doc, dict) and doc.get("success") is False:
+        print("ERR:%s" % json.dumps(doc, ensure_ascii=False), file=sys.stderr); sys.exit(1)
+    data = (doc or {}).get("data")
+    if isinstance(data, list):
+        batch, page_count = data, None
+    elif isinstance(data, dict):
+        batch = data.get("listObject") or []
+        page_count = data.get("pageCount")
+    else:
+        batch, page_count = [], None
+    items.extend(batch)
+    if page_count is None:
+        if len(batch) < page_size:
+            break
+    elif go_page >= int(page_count or 1):
+        break
+    go_page += 1
+print(json.dumps({"success": True, "data": items}, ensure_ascii=False))
+PY
+}
+
 case "$action" in
   list)
     arg="${1:-}"
@@ -1659,62 +1715,25 @@ case "$action" in
       [[ -n "$project_id" ]] || die "file-module list 需要 projectId"
       request GET "$(path_fill "$METERSPHERE_FILE_MODULE_LIST_PATH" "$project_id")" "" "$service_prefix"
     elif [[ "$resource" == "functional-case" ]]; then
-      # 分页循环拉全并合并：body 的 pageSize 仅作每页大小，goPage 由脚本循环控制，
-      # 输出 {"success":true,"data":[全部页合并后的用例数组]}
+      # 分页循环拉全并合并（paged_post_list）：body 的 pageSize 仅作每页大小
       list_body="${arg:-}"
       if [[ -z "$list_body" || "$list_body" == "-" ]]; then
         [[ -n "${METERSPHERE_PROJECT_ID:-}" ]] || die "functional-case list 需要 JSON body（含 projectId）或设置 METERSPHERE_PROJECT_ID"
         list_body="{\"projectId\":\"$METERSPHERE_PROJECT_ID\"}"
       fi
-      need_base_url
-      need_keys
-      signature="$(generate_signature)"
-      python3 - "$list_body" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH" <<'PY'
-import json, sys, urllib.error, urllib.request
-body_raw, base_url, access_key, signature, list_path = sys.argv[1:6]
-try:
-    user_body = json.loads(body_raw)
-    if not isinstance(user_body, dict):
-        raise ValueError
-except Exception:
-    print("ERR:functional-case list body 需为 JSON 对象", file=sys.stderr); sys.exit(1)
-if not user_body.get("projectId"):
-    print("ERR:functional-case list body 需要 projectId", file=sys.stderr); sys.exit(1)
-page_size = int(user_body.get("pageSize") or 100)
-items, go_page = [], 1
-while True:
-    url = "%s/track%s" % (base_url, list_path.replace("{goPage}", str(go_page)).replace("{pageSize}", str(page_size)))
-    data_bytes = json.dumps(user_body, ensure_ascii=False).encode("utf-8")
-    req = urllib.request.Request(url, data=data_bytes, method="POST")
-    req.add_header("Content-Type", "application/json")
-    req.add_header("accessKey", access_key)
-    req.add_header("signature", signature)
-    try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
-            doc = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        print("ERR:HTTP %d %s" % (e.code, e.reason), file=sys.stderr); sys.exit(1)
-    except urllib.error.URLError as e:
-        print("ERR:%s" % e.reason, file=sys.stderr); sys.exit(1)
-    if isinstance(doc, dict) and doc.get("success") is False:
-        print("ERR:%s" % json.dumps(doc, ensure_ascii=False), file=sys.stderr); sys.exit(1)
-    data = (doc or {}).get("data")
-    if isinstance(data, list):
-        batch, page_count = data, None
-    elif isinstance(data, dict):
-        batch = data.get("listObject") or []
-        page_count = data.get("pageCount")
-    else:
-        batch, page_count = [], None
-    items.extend(batch)
-    if page_count is None:
-        if len(batch) < page_size:
-            break
-    elif go_page >= int(page_count or 1):
-        break
-    go_page += 1
-print(json.dumps({"success": True, "data": items}, ensure_ascii=False))
-PY
+      paged_post_list "$service_prefix" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH" "$list_body"
+    elif [[ "$resource" == "api" || "$resource" == "api-case" ]]; then
+      # 分页循环拉全并合并（同 functional-case；api 走双前缀 /api/api/...）
+      list_body="${arg:-}"
+      if [[ -z "$list_body" || "$list_body" == "-" ]]; then
+        [[ -n "${METERSPHERE_PROJECT_ID:-}" ]] || die "$resource list 需要 JSON body（含 projectId）或设置 METERSPHERE_PROJECT_ID"
+        list_body="{\"projectId\":\"$METERSPHERE_PROJECT_ID\"}"
+      fi
+      if [[ "$resource" == "api" ]]; then
+        paged_post_list "$service_prefix" "$METERSPHERE_API_DEFINITION_LIST_PATH" "$list_body"
+      else
+        paged_post_list "$service_prefix" "$METERSPHERE_API_CASE_LIST_PATH" "$list_body"
+      fi
     else
       if [[ -n "$arg" && "$arg" == \{* ]]; then
         body="$(normalize_json_with_defaults "$resource" "$arg")"

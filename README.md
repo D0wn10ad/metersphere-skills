@@ -714,6 +714,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - `skills/references/ai-v2-api-case-prompt.md`
 - `skills/references/ai-module-api-case-prompt.md`
 - `skills/references/ai-phabricator-api-case-prompt.md`
+- `skills/references/ai-existing-api-to-cases-prompt.md`（已有接口定义 → 接口用例：缺口分析 + generate-create / 自定义设计）
+- `skills/references/ai-swagger-to-api-cases-prompt.md`（Swagger/OpenAPI 3 → 定义 + 用例：import-create 一步到位 / 草稿 + AI 增强）
 
 ---
 
