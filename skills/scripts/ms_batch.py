@@ -15,6 +15,9 @@ BASE_URL = os.environ.get('METERSPHERE_BASE_URL', '').rstrip('/')
 AK = os.environ.get('METERSPHERE_ACCESS_KEY') or os.environ.get('METERSPHERE_ACCESS_KEY', '')
 SK = os.environ.get('METERSPHERE_SECRET_KEY') or os.environ.get('METERSPHERE_SECRET_KEY', '')
 
+METERSPHERE_FUNCTIONAL_CASE_CREATE_PATH = os.environ.get('METERSPHERE_FUNCTIONAL_CASE_CREATE_PATH', '/functional/case/add')
+FUNCTIONAL_CASE_CREATE_PATH = METERSPHERE_FUNCTIONAL_CASE_CREATE_PATH
+
 
 def die(msg):
     print(msg, file=sys.stderr)
@@ -124,9 +127,21 @@ def request_multipart(method, path, fields=None, files=None):
         return json.loads(r.read().decode('utf-8', errors='replace'))
 
 
-def create_functional_cases(payloads):
+def create_functional_cases(payloads, attach_file_id=None):
     results = []
-    for item in payloads:
+    for idx, item in enumerate(payloads):
+        # 处理附件
+        if attach_file_id:
+            relate = item.get('relateFileMetaIds') or []
+            if isinstance(relate, str):
+                try:
+                    relate = json.loads(relate)
+                except:
+                    relate = []
+            # 去重
+            if attach_file_id not in relate:
+                relate.append(attach_file_id)
+            item['relateFileMetaIds'] = relate
         # 确保数据格式正确
         # 1. 确保tags是数组，不是字符串
         if 'tags' in item and isinstance(item['tags'], str):
@@ -142,6 +157,10 @@ def create_functional_cases(payloads):
             except:
                 item['customFields'] = []
         
+        # 检查projectId
+        if not item.get('projectId'):
+            raise ValueError(f"元素 {idx} 缺少 projectId")
+        
         # 3. 确保有正确的templateId
         if not item.get('templateId'):
             # 尝试从环境变量获取默认templateId
@@ -150,23 +169,9 @@ def create_functional_cases(payloads):
             if template_id:
                 item['templateId'] = template_id
             else:
-                # 如果没有设置环境变量，使用硬编码值并发出警告
-                item['templateId'] = '1163437937827890'  # 项目1163437937827840的默认templateId
-                print("警告: 使用硬编码的 templateId (1163437937827890)。建议设置 METERSPHERE_DEFAULT_TEMPLATE_ID 环境变量。")
-                print("警告: 这可能导致数据被错误归属到项目 1163437937827840。请确保使用正确的项目 ID。")
+                raise ValueError(f"元素 {idx} 缺少 templateId，且未设置 METERSPHERE_DEFAULT_TEMPLATE_ID")
         
-        # 4. 确保有versionId（必需字段）
-        if not item.get('versionId'):
-            # 尝试从环境变量获取默认versionId
-            import os
-            version_id = os.environ.get('METERSPHERE_DEFAULT_VERSION_ID')
-            if version_id:
-                item['versionId'] = version_id
-            else:
-                # 如果没有设置环境变量，使用硬编码值并发出警告
-                item['versionId'] = '1163437937827887'  # 项目1163437937827840的默认versionId
-                print("警告: 使用硬编码的 versionId (1163437937827887)。建议设置 METERSPHERE_DEFAULT_VERSION_ID 环境变量。")
-                print("警告: 这可能导致数据被错误归属到项目 1163437937827840。请确保使用正确的项目 ID。")
+
         
         # 4. 使用curl发送multipart/form-data请求
         try:
@@ -191,7 +196,7 @@ def create_functional_cases(payloads):
                 '-H', f'accessKey: {AK}',
                 '-H', f'signature: {signature}',
                 '-F', f'request=@{json_file};type=application/json',
-                f'{BASE_URL}/functional/case/add'
+                f'{BASE_URL}{FUNCTIONAL_CASE_CREATE_PATH}'
             ]
             
             # 执行curl命令
@@ -234,9 +239,30 @@ def create_api_definitions_and_cases(bundle):
 
 
 def main():
-    if len(sys.argv) != 3:
-        die('用法: ms_batch.py functional-cases <json-file> | api-import <json-file>')
-    mode, file_path = sys.argv[1], sys.argv[2]
+    args = sys.argv[1:]
+    if len(args) < 2:
+        die('用法: ms_batch.py functional-cases <json-file> [--attach-file-id <fileMetadataId>] | api-import <json-file>')
+    mode = args[0]
+    attach_file_id = None
+    file_path = None
+    i = 1
+    while i < len(args):
+        if args[i] == '--attach-file-id':
+            if i + 1 >= len(args):
+                die('用法: ms_batch.py functional-cases <json-file> [--attach-file-id <fileMetadataId>] | api-import <json-file>')
+            attach_file_id = args[i + 1]
+            i += 2
+            continue
+        elif args[i].startswith('--attach-file-id='):
+            attach_file_id = args[i].split('=', 1)[1]
+            i += 1
+            continue
+        else:
+            if file_path is None:
+                file_path = args[i]
+            i += 1
+    if file_path is None:
+        die('用法: ms_batch.py functional-cases <json-file> [--attach-file-id <fileMetadataId>] | api-import <json-file>')
     
     # 支持从标准输入读取（当文件路径为"-"时）
     if file_path == '-':
@@ -244,12 +270,23 @@ def main():
     else:
         payload = json.loads(Path(file_path).read_text(encoding='utf-8'))
     
-    if mode == 'functional-cases':
-        print(json.dumps(create_functional_cases(payload), ensure_ascii=False, indent=2))
-    elif mode == 'api-import':
-        print(json.dumps(create_api_definitions_and_cases(payload), ensure_ascii=False, indent=2))
-    else:
-        die('未知模式')
+    try:
+        if mode == 'functional-cases':
+            res = create_functional_cases(payload, attach_file_id=attach_file_id)
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            for r in res:
+                if isinstance(r, dict) and r.get('error'):
+                    sys.exit(1)
+        elif mode == 'api-import':
+            res = create_api_definitions_and_cases(payload)
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            for r in res:
+                if isinstance(r, dict) and r.get('error'):
+                    sys.exit(1)
+        else:
+            die('未知模式')
+    except ValueError as e:
+        die(str(e))
 
 if __name__ == '__main__':
     main()

@@ -165,3 +165,72 @@ references/ai-api-bundle-prompt.md
 - spec 中端点 name 变更（path 不变）再导入：fullCoverage 按 path 去重不落新行，但会**更新既有定义的 name**（id/createTime 不变）。
 - 此时按 name 解析仍能命中（改名后的定义在列表中），旧用例变体名不匹配新变体名 → 生成新变体用例（EXIT 0）→ 重跑跳过，幂等成立。
 - 若 name 在定义列表中完全不存在（如跨项目、列表拉取失败），回退响应 id → detail GET 得 `data:null` → 输出中文诊断并跳过该定义。
+
+## 11. 项目文件库 / 用例附件 / 未规划模块（现场实测 + source-only）
+
+> 以下除明确标注 `未验证 (source-only)` 者外，均为现场实测证实的事实（v2.10.26-lts）。v3 章节无服务器可连，**全部为推测来源，不得当作已验证**。
+
+### 11.1 包装响应形状
+
+所有 track / file 端点的成功响应统一为：
+
+```json
+{ "success": true, "data": ... }
+```
+
+- 失败时 `success:false`（或 HTTP 4xx/5xx）。脚本以子串匹配 `"success":false` 判失败。
+- 部分写操作 `data` 为 `null`（如 `attachment relate` 成功返回 `{"success":true,"data":null}`）。
+
+### 11.2 项目文件库 file 资源（v2）
+
+- **暴露动作仅**：`file create '<JSON>' <local-file>`（`POST /file/metadata/create`，multipart：`request=FileMetadataCreateRequest` + `file=@`）与 `file exists <fileId>...`（`POST /file/metadata/exists`，载荷为 id 数组）。
+- 服务端**按 name 去重**：已存在同名文件时创建失败，英文消息 `The file already exists`。
+- `file exists` 仅回显存在的 id；脚本据「请求 id 集合 − 回显集合」判缺失，任一缺失即 zh-CN 报错退出。
+- **反模式（禁止）**：`file` 资源的**按名称过滤的分页 / 列表查询**端点实测已损坏，脚本刻意不暴露 `list` / `get`（调用即 `file 资源不支持 list/get`）。发布路径只有 create + exists。
+- 库文件元数据删除可能返回 HTTP 500 却已删除——**必须重新查询确认**（list / exists 为空）。
+
+### 11.3 用例附件与库文件关联（v2）
+
+用例内上传与库文件关联是两条不同路径：
+
+- `attachment upload <caseId> <file>`：multipart（`sourceId=caseId` + `file=@`），产生**绑定到该用例 sourceId 的附件行**。
+- `attachment list <caseId>`：`POST /attachment/metadata/list`，body `{belongId, belongType:"testcase"}`，返回该用例附件元数据（id / name / size / isLocal / creator…）。
+- `attachment relate <caseId> <fileId>...`：`POST /attachment/testcase/metadata/relate`，body `{belongId, belongType:"testcase", metadataRefIds:[...]}`。
+- **relate 只接受库文件元数据 id**：
+  - 传库 id（来自 `file create`）→ `{"success":true,"data":null}`。
+  - 传「另一条用例的用例内附件行 id」（取自该用例 attachment list）→ **HTTP 500** `{"status":500,"error":"Internal Server Error","path":"/attachment/testcase/metadata/relate"}`。这是服务端用法边界，不是客户端缺陷。
+- **级联删除**：删除用例会级联删除其附件关联；删除后该用例 `attachment list` 返回 `[]`。
+
+### 11.4 batch-create --file-id 的共享语义（v2）
+
+- `functional-case batch-create <json-array-file> --file-id <fileMetadataId>` 在写入前把该库文件 id 注入每条用例的 `relateFileMetaIds`（`ms.sh` 与 `ms_batch.py --attach-file-id` 均做去重注入）。
+- 服务端**零拷贝**：N 条用例共享同一份 MinIO 对象（attachment list 中 filePath 相同、createTime 相同）——库文件语义，而非每用例复制。
+- 因用例内附件行绑定到各自 sourceId，无法借 `attachment relate` 挂到另一条用例（见 11.3），故跨用例共享只能走 `file create` + relate / `--file-id`。
+
+### 11.5 未规划用例模块解析（v2）
+
+- 省略 module（`-` 或空）时，生成器输出 `default-module` 占位（`nodePath` 恒为 `/` + nodeId）。
+- `batch-create` 检测到占位后，**按项目实时查询** `GET /track/case/node/list/{projectId}`，取 `name == '未规划用例'` 且 `parentId is None` 且 `level == 1` 的节点，把该项目的 `nodeId` 与 `nodePath`（`/未规划用例`）一并写入载荷。
+- 实测：两个项目分别把全部用例落进各自的「未规划用例」节点（对同一模块树端点做 oracle，nodeId 匹配率 100%）。
+- 解析失败（nodePath 为空、以 `/default-module` 开头、或仍等于 `/<nodeId>`）→ 逐元素硬失败 `batch-create 第 N 个用例解析失败: nodePath 无效或未能解析模块`。
+
+### 11.6 其他服务端怪癖（v2 实测）
+
+- `POST /track/test/case/list/{n}/{size}` **要求请求体内带 `projectId`**，否则不能按项目过滤。
+- 库文件创建**按 name 去重**（英文 `The file already exists`）；库文件删除**可能 500 却已删除**（见 11.2）。
+- `batch-create` **逐元素非原子**：中途失败时先前的元素已落库、不会回滚。若失败响应体含 `"success":false`，脚本以 zh-CN 报错并退出（exit 1）；若失败体不含该键（如其他 HTTP 错误体），则原样打印该元素的**未包裹 zh-CN 的原始服务端错误**后继续处理，最后打印 `batch-create 完成: 共 N 个元素，成功创建 M 个用例`（exit 0）——此裸错误输出是已知的 cosmetic gap。
+- 附件关联随用例**级联删除**（见 11.3）。
+
+### 11.7 v3 file / attachment（未验证 (source-only)）
+
+> 本环境无 v3 服务器可连，v3-only 路径返回 404。以下路径来源 v3.x 源码，**全部为 `未验证 (source-only)`**。
+
+- `file upload`：`POST /project/file/upload`（multipart，JSON body + 文件）——`未验证 (source-only)`。
+- `file page`：`POST /project/file/page`——`未验证 (source-only)`。
+- `file delete`：`POST /project/file/delete`——`未验证 (source-only)`。
+- `attachment upload`：`POST /attachment/upload/file`——`未验证 (source-only)`。
+- `attachment page`：`POST /attachment/page`——`未验证 (source-only)`。
+- `attachment delete`：`POST /attachment/delete/file`——`未验证 (source-only)`。
+- `attachment relate`：v3 复用 `attachment upload` 端点并携带 `{projectId, caseId, fileIds}`——`未验证 (source-only)`。
+- `file list/get` 与 `attachment list/get` 在 v3 均被拒绝（改用 `page`）——`未验证 (source-only)`。
+- v3 省略 module → 字面量 `root`——`未验证 (source-only)`。

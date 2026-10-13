@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -65,18 +66,30 @@ class TestResolveSpecToFile(unittest.TestCase):
             os.unlink("/tmp/ms-spec-src.json")
 
     def test_local_existing_file(self):
-        path, name = h.resolve_spec_to_file("/tmp/opencode/springdoc-sample-bookstore.json")
-        self.assertEqual(name, "springdoc-sample-bookstore.json")
-        self.assertTrue(os.path.isabs(path))
+        tmpdir = tempfile.mkdtemp()
+        src = os.path.join(tmpdir, "springdoc-sample-bookstore.json")
+        with open(src, "w", encoding="utf-8") as fh:
+            fh.write('{"openapi": "3.0.0"}')
+        try:
+            path, name = h.resolve_spec_to_file(src)
+            self.assertEqual(name, "springdoc-sample-bookstore.json")
+            self.assertTrue(os.path.isabs(path))
+        finally:
+            os.unlink(src)
+            os.rmdir(tmpdir)
 
     def test_nonexistent_path_errors(self):
-        with self.assertRaises(ValueError):
-            h.resolve_spec_to_file("/tmp/opencode/definitely-not-here.json")
+        tmpdir = tempfile.mkdtemp()
+        src = os.path.join(tmpdir, "definitely-not-here.json")
+        try:
+            with self.assertRaises(ValueError):
+                h.resolve_spec_to_file(src)
+        finally:
+            os.rmdir(tmpdir)
 
     def test_bad_suffix_errors(self):
-        src = "/tmp/opencode/not-a-spec.txt"
-        with open(src, "w", encoding="utf-8") as fh:
-            fh.write("x")
+        fd, src = tempfile.mkstemp(suffix=".txt")
+        os.close(fd)
         try:
             with self.assertRaises(ValueError):
                 h.resolve_spec_to_file(src)

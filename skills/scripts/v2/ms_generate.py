@@ -16,6 +16,8 @@ from pathlib import Path
 
 USAGE = '''用法:
   ms_generate.py functional-cases <projectId> <moduleId> <requirement-file> [--templateId <id>] [--versionId <id>]
+  ms_generate.py functional-cases <projectId> <requirement-file> [--templateId <id>] [--versionId <id>]
+    （省略 moduleId 时输出 default-module 占位，批量写入前由 ms.sh 解析为真实「未规划用例」节点）
 仅支持 functional-cases；api-import 未移植。'''
 
 
@@ -89,6 +91,10 @@ def build_case_variants(item: str):
 
 def build_functional_cases(project_id: str, module_id: str, text: str,
                            template_id: str = None, version_id: str = None):
+    # module_id 省略时输出 default-module 占位对：nodePath 恒为 "/" + nodeId，
+    # 可被 v2/ms.sh 的 need_resolve 检测器识别，并替换为该模块树的真实
+    # 「未规划用例」节点（nodeId 与 nodePath 一起替换）。
+    effective_module_id = module_id or 'default-module'
     items = split_requirement_items(text)
     out = []
     for item in items:
@@ -97,11 +103,11 @@ def build_functional_cases(project_id: str, module_id: str, text: str,
             case = {
                 'name': name[:255],
                 'projectId': project_id,
-                'nodeId': module_id,
-                # 本地脚本无法解析模块名，nodePath 采用 "/" + moduleId 占位，
+                'nodeId': effective_module_id,
+                # 本地脚本无法解析模块名，nodePath 采用 "/" + nodeId 占位，
                 # 与真实格式（"/" + 模块名，如 "/未规划用例"）保持一致；
                 # 批量写入前需按模块树确认真实 nodePath（见 Gap-resolution #6）。
-                'nodePath': '/' + module_id,
+                'nodePath': '/' + effective_module_id,
                 'priority': priority,
                 'steps': json.dumps(build_test_steps(item, idx), ensure_ascii=False),
                 'caseEditType': 'STEP',
@@ -130,7 +136,11 @@ def main():
 
     if args.action != 'functional-cases':
         die(f'不支持的 action: {args.action}（仅支持 functional-cases；api-import 未移植）')
-    if not (args.project_id and args.module_id and args.requirement_file):
+    # 恰好 2 个位置参数 ⇒ 省略了 module_id：整体左移一位。
+    # 该交换必须在守卫之前执行，否则 2 参数形态会被误判为缺失。
+    if args.project_id and args.module_id and args.requirement_file is None:
+        args.requirement_file, args.module_id = args.module_id, ''
+    if not (args.project_id and args.requirement_file):
         die(USAGE)
 
     try:
