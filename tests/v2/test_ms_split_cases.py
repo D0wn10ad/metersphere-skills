@@ -274,3 +274,65 @@ def test_missing_file_error():
     proc = run_splitter(str(FIXTURES / "no-such.xlsx"))
     assert proc.returncode != 0
     assert "文件不存在" in proc.stderr, "stderr=%s" % proc.stderr
+
+
+# --------------------------------------------------------------------------
+# G5: 官方英文 xlsx 表头（与中文模板并存，不得破坏中文支持）
+# --------------------------------------------------------------------------
+
+EN_HEADERS = ["ID", "Name", "Module", "Tags", "Prerequisite",
+              "Step description", "Expected result", "Edit mode",
+              "Remark", "Case status", "Maintainer", "Priority"]
+
+
+def write_xlsx(path, rows):
+    """在测试内构造 xlsx（不新增 fixtures 文件，遵守仅改两文件的约束）。"""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    for row in rows:
+        ws.append(row)
+    wb.save(str(path))
+
+
+def test_split_xlsx_english_headers(tmp_path):
+    """英文官方表头 xlsx 正常拆出非空草稿（用例/模块/步骤/标签/优先级等）。"""
+    xlsx = tmp_path / "en.xlsx"
+    write_xlsx(xlsx, [
+        EN_HEADERS,
+        [None, "Login success", "Default/Login", '["smoke","login"]',
+         "user registered", "enter password", "home page", "STEP",
+         None, None, "alice", "P1"],
+        [None, None, None, None, None, "click login", "success",
+         None, None, None, None, None],
+        [None, "Login failure", "Default/Login", None, None,
+         "wrong password", "error", "STEP", "lock after 5",
+         None, None, "P2"],
+    ])
+    proc = run_splitter(str(xlsx))
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    drafts = load_drafts(proc)
+    assert len(drafts) == 2, "英文表头应拆出 2 条用例：%s" % drafts
+    first = drafts[0]
+    assert first["name"] == "Login success"
+    assert first["nodePath"] == "Default/Login"
+    assert first["priority"] == "P1"
+    assert first["caseEditType"] == "STEP"
+    assert first["precondition"] == "user registered"
+    assert first["tags"] == '["smoke", "login"]'
+    assert [s["desc"] for s in first["steps"]] == ["enter password", "click login"]
+    assert first["steps"][0]["result"] == "home page"
+    second = drafts[1]
+    assert second["name"] == "Login failure"
+    assert second["priority"] == "P2"
+    assert second["remark"] == "lock after 5"
+
+
+def test_split_xlsx_missing_header_lists_acceptable(tmp_path):
+    """缺 name/steps 表头的 xlsx 退出非零，stderr 列出可接受的中/英文表头。"""
+    xlsx = tmp_path / "bad.xlsx"
+    write_xlsx(xlsx, [["Foo", "Bar"], ["a", "b"]])
+    proc = run_splitter(str(xlsx))
+    assert proc.returncode != 0, "缺表头应退出非零"
+    assert "用例名称" in proc.stderr, "stderr 须含中文可接受表头：%s" % proc.stderr
+    assert "name" in proc.stderr, "stderr 须含英文可接受表头：%s" % proc.stderr

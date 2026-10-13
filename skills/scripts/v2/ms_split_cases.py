@@ -33,7 +33,19 @@ SUPPORTED_FORMATS = ("xlsx", "docx", "pdf", "xmind")
 XLSX_HEADER_MAP = {"用例名称": "name", "所属模块": "nodePath", "标签": "tags",
                    "前置条件": "precondition", "步骤描述": "step_desc",
                    "预期结果": "step_result", "编辑模式": "caseEditType",
-                   "备注": "remark", "用例等级": "priority"}
+                   "备注": "remark", "用例等级": "priority",
+                   "name": "name", "module": "nodePath",
+                   "tag": "tags", "tags": "tags",
+                   "prerequisite": "precondition", "precondition": "precondition",
+                   "step description": "step_desc", "steps": "step_desc",
+                   "step result": "step_result", "expected": "step_result",
+                   "expected result": "step_result",
+                   "priority": "priority", "remark": "remark",
+                   "edit mode": "caseEditType",
+                   "case status": "case_status", "maintainer": "maintainer"}
+XLSX_HEADER_LOOKUP = {k.strip().casefold(): v for k, v in XLSX_HEADER_MAP.items()}
+STEP_LABELS = frozenset(s.casefold() for s in
+                        ("步骤描述", "用例名称", "desc", "steps", "step description"))
 TC_CHILD_RE = re.compile(r"^(pc|rc|tag|id)\s*[:：]\s*(.*)$", re.I)
 
 
@@ -142,11 +154,14 @@ def _split_xlsx(path, project_id=None):
         raise ValueError("xlsx 文件无内容行")
     header_idx = {}
     for i, cell in enumerate(rows[0]):
-        name = str(cell or "").strip()
-        if name in XLSX_HEADER_MAP and XLSX_HEADER_MAP[name] not in header_idx:
-            header_idx[XLSX_HEADER_MAP[name]] = i
+        key = XLSX_HEADER_LOOKUP.get(str(cell or "").strip().casefold())
+        if key is not None and key not in header_idx:
+            header_idx[key] = i
     if "name" not in header_idx:
-        raise ValueError("xlsx 首行未找到「用例名称」列表头（须为 MeterSphere 导入模板格式）")
+        acceptable = "、".join(sorted(XLSX_HEADER_MAP))
+        raise ValueError(
+            "xlsx 首行未找到「用例名称 / name」列表头（须为 MeterSphere 导入模板格式）；"
+            f"可接受的列名：{acceptable}")
     col = lambda row, key: row[header_idx[key]] if header_idx.get(key) is not None and header_idx[key] < len(row) else None
     drafts, current = [], None
     for row in rows[1:]:
@@ -269,7 +284,7 @@ def _split_docx(path, project_id=None):
         if hasattr(block, "rows"):
             for row in block.rows:
                 cells = [c.text.strip() for c in row.cells]
-                if cells and cells[0] in ("步骤描述", "desc", "用例名称"):
+                if cells and cells[0].strip().casefold() in STEP_LABELS:
                     continue
                 if current is not None and any(cells):
                     current["steps"].append({
