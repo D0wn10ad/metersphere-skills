@@ -314,7 +314,7 @@ resource_paths() {
       echo "$METERSPHERE_ATTACHMENT_LIST_PATH|$METERSPHERE_ATTACHMENT_DOWNLOAD_PATH|$METERSPHERE_ATTACHMENT_UPLOAD_PATH"
       ;;
     file-module)
-      echo "$METERSPHERE_FILE_MODULE_LIST_PATH|$METERSPHERE_FILE_MODULE_CREATE_PATH"
+      echo "$METERSPHERE_FILE_MODULE_LIST_PATH||$METERSPHERE_FILE_MODULE_CREATE_PATH"
       ;;
     file)
       echo "$METERSPHERE_FILE_METADATA_LIST_PATH|$METERSPHERE_FILE_METADATA_INFO_PATH|$METERSPHERE_FILE_METADATA_CREATE_PATH"
@@ -546,6 +546,18 @@ action="${1:-}"
 shift || true
 IFS='|' read -r list_path get_path create_path <<< "$(resource_paths "$resource")"
 service_prefix="$(service_prefix "$resource")"
+
+# 动作-端点守卫：资源未配置对应端点时快速失败，避免向残缺 URL 发请求
+case "$action" in
+  list) [[ -n "$list_path" ]] || die "资源 $resource 不支持 list（未配置列表端点）" ;;
+  get) [[ -n "$get_path" ]] || die "资源 $resource 不支持 get（未配置详情端点）" ;;
+  create)
+    if [[ "$resource" == "project" ]]; then
+      die "project create 不受支持：创建项目需要工作空间管理员权限（WORKSPACE_PROJECT_MANAGER_READ_CREATE，Web 端「系统设置-项目管理」），技能 AK 通常仅为项目成员；请先在 Web 端创建项目，再用 project list 确认（不要轮询）"
+    fi
+    [[ -n "$create_path" ]] || die "资源 $resource 不支持 create（未配置创建端点）"
+    ;;
+esac
 
 # 批量校验文件元数据 id 是否存在于项目文件库（POST /file/metadata/exists，载荷为 id 数组）。
 # 服务端仅回显存在的 id。返回 0 = 全部存在；返回 1 = 有缺失。响应存入 FILE_EXISTS_RESP。

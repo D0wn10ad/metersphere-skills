@@ -657,6 +657,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - 功能用例删除（v2，含写入安全守卫）
 - API 路径按版本/部署覆盖（`METERSPHERE_*_PATH`，ms.sh / ms.py / 报告脚本均支持）
 - v3 的 file / attachment 资源与 `batch-create --file-id`（**未验证 (source-only)**，本环境无 v3 服务器可连）
+- **项目创建不在技能范围**：`project create` 需工作空间管理员权限（`WORKSPACE_PROJECT_MANAGER_READ_CREATE`，Web 端「系统设置-项目管理」），技能 AK 通常仅为项目成员——命令会快速失败并指引先在 Web 端创建、再用 `project list` 确认（不要轮询）。未配置对应端点的资源动作（如 `functional-module create`）同样快速失败，不会向残缺 URL 发请求。
 
 当前项目定位仍以：
 

@@ -531,6 +531,27 @@ def test_file_create_no_misleading_stderr(recorder, tmp_path):
         "成功路径不得泄漏 resource_paths 报错：stderr=%s" % proc.stderr)
 
 
+def test_project_create_rejected_with_permission_guidance(recorder):
+    """project create 需工作空间管理员 → 快速失败并指引用 Web 端创建，不发请求。"""
+    proc = run_ms_sh(["project", "create",
+                      json.dumps({"name": "p1", "workspaceId": "w1"})],
+                     recorder.base_url)
+    assert proc.returncode != 0
+    assert "WORKSPACE_PROJECT_MANAGER_READ_CREATE" in proc.stderr, (
+        "stderr 应点名所需权限：%s" % proc.stderr)
+    assert "project list" in proc.stderr, "stderr 应指引确认方式：%s" % proc.stderr
+    assert not recorder.requests, "不应发出任何请求：%s" % recorder.requests
+
+
+def test_unsupported_create_rejected_without_request(recorder):
+    """未配置创建端点的资源（functional-module create）→ 快速失败，不发请求。"""
+    proc = run_ms_sh(["functional-module", "create",
+                      json.dumps({"name": "m1"})], recorder.base_url)
+    assert proc.returncode != 0
+    assert "不支持 create" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not recorder.requests, "不应发出任何请求：%s" % recorder.requests
+
+
 # --------------------------------------------------------------------------
 # G6: raw 服务前缀覆盖
 # --------------------------------------------------------------------------
