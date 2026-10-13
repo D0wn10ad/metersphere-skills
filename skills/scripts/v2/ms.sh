@@ -2175,7 +2175,7 @@ PY
     [[ -f "$excel_file" ]] || die "functional-case import 文件不存在: $excel_file"
     norm_dir=""
     if [[ -n "$fix_status" || -n "$default_maintainer" ]]; then
-      [[ "${excel_file##*.}" == "xlsx" ]] || die "--fix-status/--default-maintainer 仅支持 .xlsx（xmind 无列概念）"
+      [[ "${excel_file##*.}" == "xlsx" ]] || die "--fix-status/--default-maintainer 仅支持 .xlsx；xmind 导入无需规范化（服务端自动填充：责任人=导入用户 XmindCaseParser:347，状态/等级=模板默认值 setDefaultCustomFieldVal）"
       norm_dir="$(mktemp -d)"
       normalized_file="$norm_dir/$(basename "$excel_file")"
       cp "$excel_file" "$normalized_file"
