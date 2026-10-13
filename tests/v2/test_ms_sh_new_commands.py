@@ -122,6 +122,13 @@ class RecordingHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         body = self._read_body()
         self.server.requests.append(("POST", self.path, body))
+        if self.path == "/track/file/module/add":
+            received = extract_request_field(body)
+            self.server.file_module_bodies.append(received)
+            self._send(200, {"success": True,
+                             "data": {"id": "folder-new",
+                                      "name": received.get("name")}})
+            return
         if self.path == "/track/test/case/import":
             received = extract_request_field(body)
             if "projectId" not in received or "importType" not in received:
@@ -130,8 +137,20 @@ class RecordingHandler(BaseHTTPRequestHandler):
                                  "received": received})
                 return
             self.server.import_bodies.append(received)
+            # 模拟真实落库：新增 2 条用例，使 C1 落库增量校验通过
+            n = len(self.server.functional_cases) + 1
+            for k in range(n, n + 2):
+                self.server.functional_cases.append(
+                    {"id": "fc-%d" % k, "name": "导入用例-%d" % k})
             self._send(200, {"success": True, "data": {"errorPath": ""},
                              "received": received})
+            return
+        m = re.match(r"^/track/test/case/list/(\d+)/(\d+)$", self.path)
+        if m:
+            items = [{"id": c["id"], "name": c["name"]}
+                     for c in self.server.functional_cases]
+            self._send(200, {"success": True, "data": {
+                "listObject": items, "pageCount": 1, "itemCount": len(items)}})
             return
         if re.match(r"^/track/file/metadata/project/[^/]+/\d+/\d+$", self.path):
             self._send(200, {"success": True, "data": {
@@ -144,6 +163,25 @@ class RecordingHandler(BaseHTTPRequestHandler):
         if self.path == "/track/test/case/batch/relate/demand":
             self.server.relate_demand_bodies.append(json.loads(body))
             self._send(200, {"success": True})
+            return
+        # 库文件元数据存在性校验（file_metadata_exists）：仅回显 requested ∩ existing。
+        if self.path == "/track/file/metadata/exists":
+            try:
+                requested = json.loads(body) if body else []
+            except json.JSONDecodeError:
+                requested = []
+            if not isinstance(requested, list):
+                requested = []
+            present = [i for i in requested
+                       if i in self.server.existing_file_ids]
+            self._send(200, {"success": True, "data": present})
+            return
+        # 功能用例创建（batch-create 逐元素 POST /track/test/case/add，multipart request=@）。
+        if self.path == "/track/test/case/add":
+            received = extract_request_field(body)
+            self.server.batch_create_bodies.append(received)
+            n = len(self.server.batch_create_bodies)
+            self._send(200, {"success": True, "data": "case-%d" % n})
             return
         self._send(404, {"error": "not found: %s" % self.path})
 
@@ -175,12 +213,20 @@ class RecordingServer(object):
         return self.httpd.import_bodies
 
     @property
+    def file_module_bodies(self):
+        return self.httpd.file_module_bodies
+
+    @property
     def unrelated_bodies(self):
         return self.httpd.unrelated_bodies
 
     @property
     def relate_demand_bodies(self):
         return self.httpd.relate_demand_bodies
+
+    @property
+    def batch_create_bodies(self):
+        return self.httpd.batch_create_bodies
 
     def bodies_for(self, path_pattern):
         """返回 path 命中正则的所有请求体（已按录制顺序）。"""
@@ -199,8 +245,12 @@ def recorder():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
     httpd.requests = []
     httpd.import_bodies = []
+    httpd.file_module_bodies = []
     httpd.unrelated_bodies = []
     httpd.relate_demand_bodies = []
+    httpd.batch_create_bodies = []
+    httpd.existing_file_ids = set()
+    httpd.functional_cases = []
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
     handle = RecordingServer(httpd, thread)
@@ -401,6 +451,97 @@ def test_file_module_list_without_project_dies(recorder):
                 if "/file/module/list/" in p]
 
 
+def test_file_module_create_sends_project_and_name(recorder):
+    """file-module create 走 POST /file/module/add，body 含 projectId+name。"""
+    proc = run_ms_sh(["file-module", "create", "新文件夹"], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    paths = [path for _m, path, _b in recorder.requests
+             if "/file/module/add" in path]
+    assert paths == ["/track/file/module/add"], "路径不符：%s" % paths
+    assert len(recorder.file_module_bodies) == 1, "应恰好收到 1 个 create body"
+    doc = recorder.file_module_bodies[0]
+    assert doc["projectId"] == PROJECT_ID, "body=%s" % doc
+    assert doc["name"] == "新文件夹", "body=%s" % doc
+    assert "parentId" not in doc, "省略 parentId 时不应发送该键"
+
+
+def test_file_module_create_without_project_dies(recorder):
+    """未设 METERSPHERE_PROJECT_ID → zh-CN 写入守卫拒绝，不发请求。"""
+    proc = run_ms_sh(["file-module", "create", "新文件夹"],
+                     recorder.base_url, project_id="")
+    assert proc.returncode != 0
+    assert "拒绝写入" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not [p for _m, p, _b in recorder.requests
+                if "/file/module/add" in p]
+
+
+# --------------------------------------------------------------------------
+# G6: raw 服务前缀覆盖
+# --------------------------------------------------------------------------
+
+def test_raw_default_uses_api_prefix(recorder):
+    """raw 不带 --service 时仍走默认 api 前缀（行为不变）。"""
+    proc = run_ms_sh(["raw", "GET", "/system/version"], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    paths = [path for _m, path, _b in recorder.requests
+             if path.endswith("/system/version")]
+    assert paths == ["/api/system/version"], "路径不符：%s" % paths
+
+
+def test_raw_service_flag_resolves_prefix(recorder):
+    """raw --service <resource> 经 service_prefix 解析前缀（functional-template → project）。"""
+    proc = run_ms_sh(
+        ["raw", "GET", "/project/list/related", "",
+         "--service", "functional-template"], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    paths = [path for _m, path, _b in recorder.requests
+             if path.endswith("/project/list/related")]
+    assert paths == ["/project/project/list/related"], "路径不符：%s" % paths
+
+
+def test_raw_service_positional_and_equals_form(recorder):
+    """第 4 位置参数与 --service= 等价形式均解析为同一前缀。"""
+    for extra in (["functional-template"], ["--service=functional-template"]):
+        proc = run_ms_sh(
+            ["raw", "GET", "/project/list/related", ""] + extra,
+            recorder.base_url)
+        assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    paths = [path for _m, path, _b in recorder.requests
+             if path.endswith("/project/list/related")]
+    assert paths == ["/project/project/list/related"] * 2, "路径不符：%s" % paths
+
+
+# --------------------------------------------------------------------------
+# G7: ms doctor
+# --------------------------------------------------------------------------
+
+def test_doctor_reports_version_and_sha(recorder):
+    """doctor exit 0，输出含版本号与 git 短 SHA。"""
+    proc = run_ms_sh(["doctor"], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert "版本: 1.1.0 (git " in proc.stdout, "stdout=%s" % proc.stdout
+    assert "OK   二进制: python3" in proc.stdout
+    assert "OK   env: METERSPHERE_BASE_URL 已设置" in proc.stdout
+
+
+def test_doctor_graceful_without_git(tmp_path):
+    """非 git 树副本：优雅跳过短 SHA 而非报错。"""
+    import shutil
+    dst = os.path.join(str(tmp_path), "skillroot")
+    shutil.copytree(os.path.join(REPO_ROOT, "skills"), dst,
+                    ignore=shutil.ignore_patterns("__pycache__", ".env"))
+    env = dict(os.environ)
+    env.update({"METERSPHERE_BASE_URL": "http://127.0.0.1:1",
+                "METERSPHERE_ACCESS_KEY": "ak",
+                "METERSPHERE_SECRET_KEY": "sk"})
+    proc = subprocess.run(
+        ["bash", os.path.join(dst, "scripts", "v2", "ms.sh"), "doctor"],
+        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert "非 git 树，跳过短 SHA" in proc.stdout, "stdout=%s" % proc.stdout
+    assert "版本: 1.1.0" in proc.stdout
+
+
 # --------------------------------------------------------------------------
 # G5: attachment unrelated 与 relate 同形状
 # --------------------------------------------------------------------------
@@ -476,6 +617,87 @@ def test_relate_demand_requires_at_least_one_case_id(recorder):
     assert proc.returncode != 0
     assert "caseId" in proc.stderr, "stderr=%s" % proc.stderr
     assert recorder.relate_demand_bodies == []
+
+
+# --------------------------------------------------------------------------
+# C2: batch-create --file-id（可重复）与 --skip-existing
+# --------------------------------------------------------------------------
+
+def _write_drafts(path, names):
+    """写一份可直接写入的草稿数组；nodeId/nodePath 非哨兵 → 跳过模块树解析。"""
+    path.write_text(json.dumps(
+        [{"name": nm, "id": "case-%d" % i, "nodeId": "m1",
+          "nodePath": "/模块"} for i, nm in enumerate(names)],
+        ensure_ascii=False), encoding="utf-8")
+
+
+def test_batch_create_repeated_file_id_injects_all_ids(recorder, tmp_path):
+    """--file-id a --file-id b → 每条元素载荷 relateFileMetaIds==["a","b"]。"""
+    drafts = tmp_path / "drafts.json"
+    _write_drafts(drafts, ["用例一", "用例二"])
+    recorder.httpd.existing_file_ids = {"a", "b"}
+    proc = run_ms_sh(
+        ["functional-case", "batch-create", str(drafts),
+         "--file-id", "a", "--file-id", "b"],
+        recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert len(recorder.batch_create_bodies) == 2, recorder.requests
+    for received in recorder.batch_create_bodies:
+        assert received["relateFileMetaIds"] == ["a", "b"], (
+            "每个元素都应注入全部 file-id：%r" % received)
+
+
+def test_batch_create_file_id_dedups_and_preserves_order(recorder, tmp_path):
+    """重复与乱序的 --file-id 去重且保序（首现顺序）。"""
+    drafts = tmp_path / "drafts.json"
+    _write_drafts(drafts, ["用例一"])
+    recorder.httpd.existing_file_ids = {"a", "b"}
+    proc = run_ms_sh(
+        ["functional-case", "batch-create", str(drafts),
+         "--file-id", "b", "--file-id", "a", "--file-id", "b"],
+        recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert recorder.batch_create_bodies[0]["relateFileMetaIds"] == ["b", "a"]
+
+
+def test_batch_create_accepts_equals_form_file_id(recorder, tmp_path):
+    """--file-id=<id> 等号形式等价于空格形式。"""
+    drafts = tmp_path / "drafts.json"
+    _write_drafts(drafts, ["用例一"])
+    recorder.httpd.existing_file_ids = {"c9"}
+    proc = run_ms_sh(
+        ["functional-case", "batch-create", str(drafts), "--file-id=c9"],
+        recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert recorder.batch_create_bodies[0]["relateFileMetaIds"] == ["c9"]
+
+
+def test_batch_create_skip_existing_filters_and_reports(recorder, tmp_path):
+    """--skip-existing：同名用例被跳过，仅新用例写入，回执含跳过计数。"""
+    drafts = tmp_path / "drafts.json"
+    _write_drafts(drafts, ["已存在用例", "新用例"])
+    recorder.httpd.functional_cases = [{"id": "fc-x", "name": "已存在用例"}]
+    proc = run_ms_sh(
+        ["functional-case", "batch-create", str(drafts), "--skip-existing"],
+        recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    names = [b["name"] for b in recorder.batch_create_bodies]
+    assert names == ["新用例"], "同名元素应被跳过：%r" % names
+    assert "跳过 1 个已存在" in proc.stdout, "stdout=%r" % proc.stdout
+
+
+def test_batch_create_rejects_missing_file_id(recorder, tmp_path):
+    """任一 file-id 不存在 → file_metadata_exists 校验失败，退出非零，不写入。"""
+    drafts = tmp_path / "drafts.json"
+    _write_drafts(drafts, ["用例一"])
+    recorder.httpd.existing_file_ids = {"good"}
+    proc = run_ms_sh(
+        ["functional-case", "batch-create", str(drafts),
+         "--file-id", "good", "--file-id", "bad"],
+        recorder.base_url)
+    assert proc.returncode != 0
+    assert "文件元数据不存在" in proc.stderr, "stderr=%s" % proc.stderr
+    assert recorder.batch_create_bodies == [], "校验失败不应写入任何用例"
 
 
 # --------------------------------------------------------------------------

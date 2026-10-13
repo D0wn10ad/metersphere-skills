@@ -77,6 +77,7 @@ API_CASE_TAGS_JSON=""
 [[ -n "${METERSPHERE_FILE_METADATA_LIST_PATH:-}" ]] || METERSPHERE_FILE_METADATA_LIST_PATH='/file/metadata/project/{projectId}/{goPage}/{pageSize}'
 [[ -n "${METERSPHERE_FILE_METADATA_INFO_PATH:-}" ]] || METERSPHERE_FILE_METADATA_INFO_PATH='/file/metadata/info/{id}'
 # v2 项目文件库文件夹树（v2.10 FileModuleController；body 里的 moduleId=文件夹 id，实测）。
+[[ -n "${METERSPHERE_FILE_MODULE_CREATE_PATH:-}" ]] || METERSPHERE_FILE_MODULE_CREATE_PATH='/file/module/add'
 [[ -n "${METERSPHERE_FILE_MODULE_LIST_PATH:-}" ]] || METERSPHERE_FILE_MODULE_LIST_PATH='/file/module/list/{projectId}'
 # 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出）：完整字面路径
 # /test/case + /batch/relate/demand（类级 @RequestMapping("/test/case")，v2.10 TestCaseController.java:363）。
@@ -312,9 +313,8 @@ resource_paths() {
     attachment)
       echo "$METERSPHERE_ATTACHMENT_LIST_PATH|$METERSPHERE_ATTACHMENT_DOWNLOAD_PATH|$METERSPHERE_ATTACHMENT_UPLOAD_PATH"
       ;;
-    file) echo "$METERSPHERE_FILE_METADATA_LIST_PATH|$METERSPHERE_FILE_METADATA_INFO_PATH|$METERSPHERE_FILE_METADATA_CREATE_PATH";;
     file-module)
-      echo "$METERSPHERE_FILE_MODULE_LIST_PATH||"
+      echo "$METERSPHERE_FILE_MODULE_LIST_PATH|$METERSPHERE_FILE_MODULE_CREATE_PATH"
       ;;
     *)
       die "不支持的资源: $1"
@@ -420,9 +420,10 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms file list <projectId> [goPage] [pageSize]
   ms file get <fileId> [outfile]
    ms file create '{"id":"<uuid4>","projectId":"<projectId>","storage":"MINIO","name":"a.txt"}' <local-file>
-   ms file-module list <projectId>
+    ms file-module list <projectId>
+   ms file-module create <name> [parentId]
   ms file exists <fileId> [<fileId>...]
-  ms raw GET /system/version
+   ms raw GET /system/version [--service <resource>]
 EOF
 }
 
@@ -438,8 +439,75 @@ fi
 if [[ "$cmd" == "raw" ]]; then
   method="${1:-}"; shift || die "raw 需要 METHOD"
   path="${1:-}"; shift || die "raw 需要 PATH"
-  body="${1:-}"
-  request "$method" "$path" "$body"
+  body=""
+  body_seen=0
+  raw_service=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --service=*)
+        raw_service="${1#--service=}"
+        ;;
+      --service)
+        shift
+        raw_service="${1:-}"
+        [[ -n "$raw_service" ]] || die "raw --service 需要资源名"
+        ;;
+      *)
+        if [[ "$body_seen" -eq 0 ]]; then
+          body="$1"
+          body_seen=1
+        elif [[ -z "$raw_service" ]]; then
+          raw_service="$1"
+        else
+          die "raw 多余参数: $1"
+        fi
+        ;;
+    esac
+    shift
+  done
+  # 默认仍走 api 前缀；给了资源名则经 service_prefix 解析（如 functional-template → project），
+  # 用于显式命中单前缀路径（如 project-management 服务的 /project/list/related）。
+  raw_prefix="api"
+  [[ -z "$raw_service" ]] || raw_prefix="$(service_prefix "$raw_service")"
+  request "$method" "$path" "$body" "$raw_prefix"
+  exit 0
+fi
+
+if [[ "$cmd" == "doctor" ]]; then
+  doctor_failed=0
+  echo "MeterSphere Skill v2 自检（ms doctor）"
+  for bin in python3 openssl curl; do
+    if command -v "$bin" >/dev/null 2>&1; then
+      echo "OK   二进制: $bin"
+    else
+      echo "缺失 二进制: $bin（必装）"
+      doctor_failed=1
+    fi
+  done
+  for var in METERSPHERE_BASE_URL METERSPHERE_ACCESS_KEY METERSPHERE_SECRET_KEY; do
+    if [[ -n "${!var:-}" ]]; then
+      echo "OK   env: $var 已设置"
+    else
+      echo "缺失 env: $var（必填，见 .env）"
+      doctor_failed=1
+    fi
+  done
+  version="$(python3 -c "import json;print(json.load(open('$SKILL_DIR/skill-metadata.json')).get('version','unknown'))" 2>/dev/null || echo unknown)"
+  sha="$(git -C "$SKILL_DIR" rev-parse --short HEAD 2>/dev/null || true)"
+  if [[ -n "$sha" ]]; then
+    echo "版本: $version (git $sha)"
+  else
+    echo "版本: $version（非 git 树，跳过短 SHA）"
+  fi
+  if [[ -n "${METERSPHERE_BASE_URL:-}" ]]; then
+    code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 5 "${METERSPHERE_BASE_URL%/}/system/version/current" 2>/dev/null || true)"
+    [[ -n "$code" ]] || code="000"
+    echo "连通性: HTTP $code（仅探测可达性，非鉴权校验）"
+  fi
+  if [[ "$doctor_failed" -ne 0 ]]; then
+    die "doctor 检查未通过：请补齐上方缺失项"
+  fi
+  echo "doctor 完成: 全部通过"
   exit 0
 fi
 
@@ -520,14 +588,20 @@ PY
 # 解析失败则透传，由服务端校验。
 batch_create_functional_cases() {
   local json_file="$1"
-  local attach_file_id="${2:-}"
+  local skip_existing="${2:-0}"
+  shift
+  if [[ $# -gt 0 ]]; then
+    shift
+  fi
+  local -a attach_ids=("$@")
   local project_id="$METERSPHERE_PROJECT_ID"
   local tmp_dir
   tmp_dir="$(mktemp -d)"
   trap 'rm -rf "$tmp_dir"' EXIT
-  python3 - "$json_file" "$tmp_dir/elements.jsonl" "$attach_file_id" <<'PY'
+  python3 - "$json_file" "$tmp_dir/elements.jsonl" "${attach_ids[@]}" <<'PY'
 import json, sys
-path, out, attach_id = sys.argv[1], sys.argv[2], sys.argv[3]
+path, out = sys.argv[1], sys.argv[2]
+attach_ids = [str(x) for x in sys.argv[3:] if x]
 try:
     data = json.load(open(path, encoding='utf-8'))
 except Exception as e:
@@ -541,7 +615,7 @@ with open(out, 'w', encoding='utf-8') as f:
         if not isinstance(el, dict):
             print(f'错误: 第 {i+1} 个元素不是 JSON 对象', file=sys.stderr)
             sys.exit(1)
-        if attach_id:
+        if attach_ids:
             existing = el.get('relateFileMetaIds')
             if isinstance(existing, list):
                 ids = [str(x) for x in existing if x]
@@ -549,11 +623,49 @@ with open(out, 'w', encoding='utf-8') as f:
                 ids = [str(existing)]
             else:
                 ids = []
-            if attach_id not in ids:
-                ids.append(attach_id)
+            for aid in attach_ids:
+                if aid not in ids:
+                    ids.append(aid)
             el['relateFileMetaIds'] = ids
         f.write(json.dumps(el, ensure_ascii=False) + '\n')
 PY
+  local skipped=0
+  if [[ "$skip_existing" == "1" ]]; then
+    local existing_names
+    existing_names="$(fetch_functional_case_names "$project_id")"
+    if [[ "$existing_names" == ERR:* ]]; then
+      die "batch-create --skip-existing 失败: 无法拉取已存在用例名称 (${existing_names#ERR:})"
+    fi
+    local names_file="$tmp_dir/existing_names.txt"
+    printf '%s' "$existing_names" > "$names_file"
+    skipped="$(python3 - "$tmp_dir/elements.jsonl" "$names_file" <<'PY'
+import json, sys
+elements_path, names_path = sys.argv[1], sys.argv[2]
+names = set()
+with open(names_path, encoding='utf-8') as f:
+    for line in f:
+        nm = line.rstrip('\n')
+        if nm:
+            names.add(nm)
+kept, skipped = [], 0
+with open(elements_path, encoding='utf-8') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        el = json.loads(line)
+        nm = el.get('name')
+        if isinstance(nm, str) and nm in names:
+            skipped += 1
+            continue
+        kept.append(el)
+with open(elements_path, 'w', encoding='utf-8') as f:
+    for el in kept:
+        f.write(json.dumps(el, ensure_ascii=False) + '\n')
+print(skipped)
+PY
+)"
+  fi
   local need_resolve
     need_resolve="$(python3 - "$tmp_dir/elements.jsonl" <<'PY'
 import json, sys
@@ -670,7 +782,11 @@ elif isinstance(data, dict) and data.get("id"):
       created=$((created + 1))
     fi
   done < "$tmp_dir/elements.jsonl"
-  echo "batch-create 完成: 共 $count 个元素，成功创建 $created 个用例"
+  if [[ "$skip_existing" == "1" ]]; then
+    echo "batch-create 完成: 共 $((count + skipped)) 个元素，成功创建 $created 个用例，跳过 $skipped 个已存在"
+  else
+    echo "batch-create 完成: 共 $count 个元素，成功创建 $created 个用例"
+  fi
   rm -rf "$tmp_dir"
   trap - EXIT
 }
@@ -1407,6 +1523,55 @@ else:
   return 0
 }
 
+# 分页拉取项目内功能用例名（POST /track/test/case/list/{n}/{size}，body {projectId}）。
+# 输出：每行一个用例名；失败时输出 ERR:...（调用方需检查 ERR: 前缀）。
+fetch_functional_case_names() {
+  local project_id="$1"
+  need_base_url
+  need_keys
+  local signature
+  signature="$(generate_signature)"
+  python3 - "$project_id" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH" <<'PY'
+import json, sys, urllib.error, urllib.request
+project_id, base_url, access_key, signature, list_path = sys.argv[1:6]
+names, go_page, page_size = [], 1, 100
+while True:
+    url = "%s/track%s" % (base_url, list_path.replace("{goPage}", str(go_page)).replace("{pageSize}", str(page_size)))
+    body = json.dumps({"projectId": project_id}, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("accessKey", access_key)
+    req.add_header("signature", signature)
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            doc = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        print("ERR:HTTP %d %s" % (e.code, e.reason)); sys.exit(0)
+    except urllib.error.URLError as e:
+        print("ERR:%s" % e.reason); sys.exit(0)
+    data = (doc or {}).get("data")
+    batch, page_count = [], None
+    if isinstance(data, list):
+        batch, page_count = data, None
+    elif isinstance(data, dict):
+        batch = data.get("listObject") or []
+        page_count = data.get("pageCount")
+    else:
+        print("ERR:响应 data 结构无法识别"); sys.exit(0)
+    for it in batch:
+        nm = it.get("name") if isinstance(it, dict) else None
+        if nm:
+            names.append(str(nm))
+    if page_count is None:
+        if len(batch) < page_size:
+            break
+    elif go_page >= int(page_count or 1):
+        break
+    go_page += 1
+print("\n".join(names))
+PY
+}
+
 case "$action" in
   list)
     arg="${1:-}"
@@ -1552,6 +1717,25 @@ if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get("id"):
       [[ -n "$file_id" ]] || die "file create 失败: 响应未包含文件 id: $resp"
       exit 0
     fi
+    if [[ "$resource" == "file-module" ]]; then
+      name="${1:-}"
+      parent_id="${2:-}"
+      [[ -n "$name" ]] || die "file-module create 需要 name"
+      require_project_id
+      body="$(python3 - "$METERSPHERE_PROJECT_ID" "$name" "$parent_id" <<'PY'
+import json,sys
+project_id, name, parent_id = sys.argv[1:4]
+d = {"projectId": project_id, "name": name}
+if parent_id and parent_id != "-":
+    d["parentId"] = parent_id
+print(json.dumps(d, ensure_ascii=False))
+PY
+)"
+      resp="$(request POST "$METERSPHERE_FILE_MODULE_CREATE_PATH" "$body" "$service_prefix")"
+      printf '%s\n' "$resp"
+      [[ "$resp" != *'"success":false'* ]] || die "file-module create 失败: $resp"
+      exit 0
+    fi
     body="${1:-}"
     [[ -n "$body" ]] || die "create 需要 JSON body"
     require_project_id
@@ -1691,19 +1875,24 @@ PY
     ;;
   batch-create)
     [[ "$resource" == "functional-case" ]] || die "batch-create 仅支持 functional-case 资源"
-    # --file-id 必须在读取位置参数之前剥离（镜像 api-case generate-create 的 --tags 剥离），
+    # --file-id / --skip-existing 必须在读取位置参数之前剥离（镜像 api-case generate-create 的 --tags 剥离），
     # 否则会把字面量 "--file-id" 当成 json 文件名。
-    batch_file_id=""
+    batch_file_ids=()
+    batch_skip_existing=0
     batch_args=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
         --file-id)
           [[ $# -ge 2 ]] || die "--file-id 需要文件元数据 id"
-          batch_file_id="$2"
+          batch_file_ids+=("$2")
           shift 2
           ;;
         --file-id=*)
-          batch_file_id="${1#--file-id=}"
+          batch_file_ids+=("${1#--file-id=}")
+          shift
+          ;;
+        --skip-existing)
+          batch_skip_existing=1
           shift
           ;;
         *)
@@ -1716,10 +1905,25 @@ PY
     [[ -n "$json_file" ]] || die "batch-create 需要 JSON 数组文件"
     [[ -f "$json_file" ]] || die "batch-create 文件不存在: $json_file"
     require_project_id
-    if [[ -n "$batch_file_id" ]]; then
-      file_metadata_exists "$batch_file_id" || die "batch-create --file-id 校验失败: 文件元数据不存在或不可用: $batch_file_id"
+    batch_unique_ids=()
+    fid=""
+    existing_id=""
+    already=0
+    for fid in "${batch_file_ids[@]}"; do
+      [[ -n "$fid" ]] || continue
+      already=0
+      for existing_id in "${batch_unique_ids[@]}"; do
+        if [[ "$existing_id" == "$fid" ]]; then
+          already=1
+          break
+        fi
+      done
+      [[ "$already" == "1" ]] || batch_unique_ids+=("$fid")
+    done
+    if [[ ${#batch_unique_ids[@]} -gt 0 ]]; then
+      file_metadata_exists "${batch_unique_ids[@]}" || die "batch-create --file-id 校验失败: 文件元数据不存在或不可用: ${batch_unique_ids[*]}"
     fi
-    batch_create_functional_cases "$json_file" "$batch_file_id"
+    batch_create_functional_cases "$json_file" "$batch_skip_existing" "${batch_unique_ids[@]}"
     ;;
   generate-create)
     if [[ "$resource" == "functional-case" ]]; then
@@ -1736,7 +1940,7 @@ PY
       require_project_id
       tmp_json="$(mktemp)"
       python3 "$SCRIPT_DIR/ms_generate.py" functional-cases "$project_id" "$module_id" "$req_file" --templateId "$template_id" > "$tmp_json"
-      batch_create_functional_cases "$tmp_json"
+      batch_create_functional_cases "$tmp_json" 0
       rm -f "$tmp_json"
     elif [[ "$resource" == "api-case" ]]; then
       if [[ "${1:-}" == "--help" || "${1:-}" == "-h" || "${1:-}" == "help" ]]; then
@@ -1876,15 +2080,64 @@ PY
     need_base_url
     need_keys
     signature="$(generate_signature)"
-    resp="$(curl -sS -X POST \
+    before_names="$(fetch_functional_case_names "$project_id")" || {
+      rm -f "$tmp_json"
+      die "functional-case import 导入前用例列表查询失败"
+    }
+    if [[ "$before_names" == ERR:* ]]; then
+      rm -f "$tmp_json"
+      die "functional-case import 导入前用例列表查询失败: ${before_names#ERR:}"
+    fi
+    http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
       -H "accessKey: $METERSPHERE_ACCESS_KEY" \
       -H "signature: $signature" \
       -F "request=@${tmp_json};type=application/json" \
       -F "file=@${excel_file}" \
       "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_CASE_IMPORT_PATH}")"
     rm -f "$tmp_json"
+    http_code="${http_out##*$'\n'}"
+    resp="${http_out%$'\n'*}"
     printf '%s\n' "$resp"
-    [[ "$resp" != *'"success":false'* ]] || die "functional-case import 失败: $resp"
+    [[ "$http_code" == "200" ]] || die "functional-case import 失败 (HTTP $http_code): $resp"
+    success_check="$(printf '%s' "$resp" | python3 -c '
+import json, sys
+raw = sys.stdin.read()
+try:
+    doc = json.loads(raw)
+except Exception:
+    print("OK" if "\"success\":true" in raw else "FAIL|响应非 JSON 且不含 success:true")
+    sys.exit(0)
+if isinstance(doc, dict) and doc.get("success") is True:
+    print("OK")
+else:
+    parts = []
+    if isinstance(doc, dict):
+        if doc.get("message"):
+            parts.append(str(doc["message"]))
+        if doc.get("errList"):
+            parts.append("errList=" + json.dumps(doc["errList"], ensure_ascii=False))
+    print("FAIL|" + ("; ".join(parts) if parts else "success 非 true"))
+')"
+    if [[ "$success_check" != "OK" ]]; then
+      die "functional-case import 失败: ${success_check#FAIL|}"
+    fi
+    after_names="$(fetch_functional_case_names "$project_id")" || {
+      die "functional-case import 导入后用例列表查询失败"
+    }
+    if [[ "$after_names" == ERR:* ]]; then
+      die "functional-case import 导入后用例列表查询失败: ${after_names#ERR:}"
+    fi
+    delta="$(python3 - "$before_names" "$after_names" <<'PY'
+import sys
+before = set(sys.argv[1].splitlines())
+after = set(sys.argv[2].splitlines())
+print(len(after - before))
+PY
+)"
+    if [[ "$delta" -eq 0 ]]; then
+      die "functional-case import 服务端返回 success:true 但落库增量为 0（上游 getImportResponse 契约弱点：success 仅由 errList 为空决定，与 isUpdated/实际落库无关）——请检查导入文件格式或服务端日志"
+    fi
+    echo "import 完成: 新增 $delta 条"
     ;;
   unrelated)
     [[ "$resource" == "attachment" ]] || die "unrelated 仅支持 attachment 资源"

@@ -17,12 +17,20 @@
 - POST /api/api/testcase/create：**multipart 正则提取** apiDefinitionId/name（testcase/create 是
   multipart/form-data，ms.sh L842-846 -F "request=@..."）；记录 case；
   返回 {"success":true,"data":{"id":"mock-<n>"}}（ms.sh L848-859 从 data 解析 case_id）。
+- POST /track/test/case/import：功能用例 excel/xmind 导入（multipart request+file，ms.sh
+  functional-case import 分支）；正常回 200 {"success":true,"errList":[],"isUpdated":true}
+  并新增 2 条功能用例（state["functional_cases"]，按 projectId 归属）。
+- POST /track/test/case/list/{goPage}/{pageSize}：功能用例分页列表（body {projectId}），
+  按 projectId 过滤 → listObject [{id,name}] + pageCount（C1 落库增量校验的查询面）。
 
 故障注入（--fail 文件，**每次请求现读**，故可中途切换；缺文件=不注入）：
 - testcase_list_500：testcase/list 回 500（既有，行为不得改）。
 - api_case_create_500：**仅** testcase/create 回 500，其余路由不受影响。
 - create_body_echo：testcase/create 回显收到的请求体；缺 id/priority 时回 400 + missing 字段清单。
   正常注入仍回 200 并同样回显，便于断言"服务端到底看见了什么"。
+- import_500：**仅** /track/test/case/import 回 500 + {"success":false,"message":"no_legitimate_case_tip"}。
+- import_noop：**仅** /track/test/case/import 回 200 {"success":true,"errList":[],"isUpdated":false}
+  但**不落库**（模拟上游 getImportResponse 契约弱点：errList 空即 success，与 isUpdated 无关）。
 
 用法：python3 import_stub_server.py --state <state.json> [--port 18082] [--fail <fail.json>]
 健康检查：GET / → 200。收尾：kill 进程。
@@ -44,7 +52,8 @@ def load_state(path):
         with open(path, "r", encoding="utf-8") as f:
             return json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return {"names": {}, "cases": [], "fresh_counter": 0, "mock_counter": 0}
+        return {"names": {}, "cases": [], "fresh_counter": 0, "mock_counter": 0,
+                "functional_cases": []}
 
 
 def save_state(path, state):
@@ -218,6 +227,48 @@ class StubHandler(BaseHTTPRequestHandler):
                     "apiDefinitionId": api_def_id})
                 save_state(self.state_path, state)
             self._send(200, {"success": True, "data": {"id": case_id}})
+            return
+        # POST /track/test/case/import（功能用例 excel/xmind 导入，multipart request+file）
+        if self.path == "/track/test/case/import":
+            mode = fail_mode()
+            if mode == "import_500":
+                self._send(500, {"success": False,
+                                 "message": "no_legitimate_case_tip"})
+                return
+            received = extract_request_field(body)
+            project_id = received.get("projectId", "")
+            if mode == "import_noop":
+                # 上游契约弱点模拟：success:true 但什么都不写（errList 空即 success）
+                self._send(200, {"success": True, "errList": [],
+                                 "isUpdated": False})
+                return
+            with LOCK:
+                state = load_state(self.state_path)
+                cases = state.setdefault("functional_cases", [])
+                base = len(cases) + 1
+                for k in range(base, base + 2):
+                    cases.append({"id": "fc-%d" % k,
+                                  "name": "导入用例-%d" % k,
+                                  "projectId": project_id})
+                save_state(self.state_path, state)
+            self._send(200, {"success": True, "errList": [],
+                             "isUpdated": True})
+            return
+        # POST /track/test/case/list/{goPage}/{pageSize}（功能用例分页列表，body {projectId}）
+        m = re.match(r"^/track/test/case/list/(\d+)/(\d+)", self.path)
+        if m:
+            try:
+                req = json.loads(body)
+            except json.JSONDecodeError:
+                req = {}
+            project_id = req.get("projectId", "")
+            with LOCK:
+                state = load_state(self.state_path)
+                items = [{"id": c["id"], "name": c["name"]}
+                         for c in state.get("functional_cases", [])
+                         if c.get("projectId") == project_id]
+            self._send(200, {"success": True, "data": {
+                "listObject": items, "pageCount": 1, "itemCount": len(items)}})
             return
         self._send(404, {"error": "not found: %s" % self.path})
 
