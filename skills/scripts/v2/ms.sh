@@ -1722,13 +1722,37 @@ if isinstance(d, list) and d and isinstance(d[0], dict) and d[0].get("id"):
       parent_id="${2:-}"
       [[ -n "$name" ]] || die "file-module create 需要 name"
       require_project_id
-      body="$(python3 - "$METERSPHERE_PROJECT_ID" "$name" "$parent_id" <<'PY'
+      if [[ -z "$parent_id" || "$parent_id" == "-" || "$parent_id" == "NONE" ]]; then
+        parent_id="NONE"
+        level=1
+      else
+        tree_json="$(request GET "$(path_fill "$METERSPHERE_FILE_MODULE_LIST_PATH" "$METERSPHERE_PROJECT_ID")" "" "$service_prefix")" || true
+        level="$(printf '%s' "$tree_json" | parent_id="$parent_id" python3 -c '
+import json,sys,os
+parent_id = os.environ["parent_id"]
+try:
+    tree = json.load(sys.stdin)["data"]
+except Exception:
+    print("ERR: file-module list 响应无法解析"); raise SystemExit(1)
+def walk(nodes, depth):
+    for n in nodes:
+        if n.get("id") == parent_id:
+            yield depth
+        yield from walk(n.get("children") or [], depth + 1)
+levels = list(walk(tree, 1))
+if not levels:
+    print("ERR: 父文件夹不存在: %s" % parent_id); raise SystemExit(1)
+print(levels[0] + 1)
+')" || true
+        [[ "$level" != ERR* ]] || die "${level#ERR: }"
+        [[ -n "$level" ]] || die "file-module create 失败: 无法解析父文件夹层级"
+      fi
+      body="$(python3 - "$METERSPHERE_PROJECT_ID" "$name" "$parent_id" "$level" <<'PY'
 import json,sys
-project_id, name, parent_id = sys.argv[1:4]
-d = {"projectId": project_id, "name": name}
-if parent_id and parent_id != "-":
-    d["parentId"] = parent_id
-print(json.dumps(d, ensure_ascii=False))
+project_id, name, parent_id, level = sys.argv[1:5]
+print(json.dumps({"projectId": project_id, "name": name,
+                  "parentId": parent_id, "level": int(level),
+                  "moduleType": "module"}, ensure_ascii=False))
 PY
 )"
       resp="$(request POST "$METERSPHERE_FILE_MODULE_CREATE_PATH" "$body" "$service_prefix")"

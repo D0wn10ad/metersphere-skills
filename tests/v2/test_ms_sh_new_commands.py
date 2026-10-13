@@ -452,7 +452,7 @@ def test_file_module_list_without_project_dies(recorder):
 
 
 def test_file_module_create_sends_project_and_name(recorder):
-    """file-module create 走 POST /file/module/add，body 含 projectId+name。"""
+    """file-module create 走 POST /file/module/add，body 含 projectId+name+level+parentId 哨兵。"""
     proc = run_ms_sh(["file-module", "create", "新文件夹"], recorder.base_url)
     assert proc.returncode == 0, "stderr=%s" % proc.stderr
     paths = [path for _m, path, _b in recorder.requests
@@ -462,7 +462,31 @@ def test_file_module_create_sends_project_and_name(recorder):
     doc = recorder.file_module_bodies[0]
     assert doc["projectId"] == PROJECT_ID, "body=%s" % doc
     assert doc["name"] == "新文件夹", "body=%s" % doc
-    assert "parentId" not in doc, "省略 parentId 时不应发送该键"
+    assert doc["parentId"] == "NONE", "一级文件夹哨兵 parentId=NONE，body=%s" % doc
+    assert doc["level"] == 1, "level 必填（缺了后端 NPE），body=%s" % doc
+    assert doc["moduleType"] == "module", "body=%s" % doc
+    assert "id" not in doc, "服务端无条件覆盖 id，客户端不应发送，body=%s" % doc
+    assert "createUser" not in doc, "服务端按会话用户回填，body=%s" % doc
+
+
+def test_file_module_create_subfolder_resolves_level(recorder):
+    """传 parentId 时从文件夹树解析层级，level=父层级+1。"""
+    proc = run_ms_sh(["file-module", "create", "子文件夹", "folder-1"],
+                     recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    doc = recorder.file_module_bodies[-1]
+    assert doc["parentId"] == "folder-1", "body=%s" % doc
+    assert doc["level"] == 2, "folder-1 是一级（深度 1），子级 level=2，body=%s" % doc
+
+
+def test_file_module_create_unknown_parent_dies(recorder):
+    """parentId 在文件夹树中不存在 → zh-CN 报错退出，不发 add 请求。"""
+    proc = run_ms_sh(["file-module", "create", "子文件夹", "no-such-folder"],
+                     recorder.base_url)
+    assert proc.returncode != 0
+    assert "父文件夹不存在" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not [p for _m, p, _b in recorder.requests
+                if "/file/module/add" in p]
 
 
 def test_file_module_create_without_project_dies(recorder):

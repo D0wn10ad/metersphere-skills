@@ -403,7 +403,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 - `file list`：`POST /file/metadata/project/{projectId}/{goPage}/{pageSize}`（body `{}`，默认分页 1/20）。
 - `file get`：`GET /file/metadata/info/{id}`——**返回文件字节流**（非元数据 JSON）；省略 outfile 时输出到 stdout。
 - `file-module list`：`GET /file/module/list/{projectId}`——项目文件库**文件夹树**（body 里的 `moduleId` 即此处的文件夹 id；与功能用例模块 `functional-module` 是两个不同体系，勿混用）。
-- `file-module create`：`POST /file/module/add`（body `{projectId, name[, parentId]}`，`parentId` 传 `-` 或省略 = 根目录）——创建项目文件库文件夹；写入守卫与 `file create` 一致（未设 `METERSPHERE_PROJECT_ID` 拒绝执行）。
+- `file-module create`：`POST /file/module/add`（body `{projectId, name, parentId, level, moduleType:"module"}`；`parentId` 省略/`-`/`NONE` = 一级文件夹哨兵 `"NONE"`，`level` 必填——服务端 `getNextLevelPos` 用它算同级排序，缺了触发后端 NPE；传父文件夹 id 时自动从文件夹树解析 `level=父层级+1`，父不存在即 zh-CN 报错）。服务端域对象直绑（`FileModuleController.addNode(FileModule)`）但会**自动回填** `id`（无条件覆盖）、`createTime`/`updateTime`、`pos`（同级最大值+1）、`createUser`（会话用户）——客户端不要发送这些字段。写入守卫与 `file create` 一致（未设 `METERSPHERE_PROJECT_ID` 拒绝执行）。
 - `attachment relate` 或 `batch-create --file-id` 均接受该库文件元数据 id；后者在写入前把库文件注入每条用例的 `relateFileMetaIds`，**N 条用例共享同一份 MinIO 对象**（attachment list 中 filePath 相同、createTime 相同）。
 - **用例内上传（`attachment upload`）不可共享**：它产生绑定到该用例 sourceId 的行，无法挂到另一条用例（实测 HTTP 500）；跨用例共享只能走 `file create`。
 - **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤**的查询端点——实测损坏且不暴露；分页列表走 `file list`（v2.10 实测有效）。
