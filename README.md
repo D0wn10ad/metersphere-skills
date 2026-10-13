@@ -124,6 +124,7 @@ metersphere-skills/
             ├── ms_generate.py
             ├── ms_generate_case.py
             ├── ms_import_helper.py
+            ├── ms_split_cases.py
             ├── ms_chat_log.py
             ├── ms_case_report.py
             ├── ms_review_summary.py
@@ -393,6 +394,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 ./scripts/v2/ms.sh file list <projectId> [goPage] [pageSize]
 ./scripts/v2/ms.sh file get <fileId> [outfile]
 ./scripts/v2/ms.sh file-module list <projectId>
+./scripts/v2/ms.sh file-module create <name> [parentId]
 ./scripts/v2/ms.sh functional-case batch-create <json-array-file> --file-id <fileMetadataId>
 ```
 
@@ -401,6 +403,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 - `file list`：`POST /file/metadata/project/{projectId}/{goPage}/{pageSize}`（body `{}`，默认分页 1/20）。
 - `file get`：`GET /file/metadata/info/{id}`——**返回文件字节流**（非元数据 JSON）；省略 outfile 时输出到 stdout。
 - `file-module list`：`GET /file/module/list/{projectId}`——项目文件库**文件夹树**（body 里的 `moduleId` 即此处的文件夹 id；与功能用例模块 `functional-module` 是两个不同体系，勿混用）。
+- `file-module create`：`POST /file/module/add`（body `{projectId, name[, parentId]}`，`parentId` 传 `-` 或省略 = 根目录）——创建项目文件库文件夹；写入守卫与 `file create` 一致（未设 `METERSPHERE_PROJECT_ID` 拒绝执行）。
 - `attachment relate` 或 `batch-create --file-id` 均接受该库文件元数据 id；后者在写入前把库文件注入每条用例的 `relateFileMetaIds`，**N 条用例共享同一份 MinIO 对象**（attachment list 中 filePath 相同、createTime 相同）。
 - **用例内上传（`attachment upload`）不可共享**：它产生绑定到该用例 sourceId 的行，无法挂到另一条用例（实测 HTTP 500）；跨用例共享只能走 `file create`。
 - **反模式（禁止）**：不要调用 `file` 资源的**按名称过滤**的查询端点——实测损坏且不暴露；分页列表走 `file list`（v2.10 实测有效）。
@@ -496,6 +499,14 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 ```
 
 - 与主包同名命令（§8.5）语义一致，但走 v2 路径；`case-report-md` 输出面向用户的 Markdown 报告（摘要/前置条件/备注/步骤/缺陷/评审记录）。
+
+#### 导入可信度与自检（#31102）
+
+- **`functional-case import` 三重校验**：HTTP 200 + 响应 `success:true` + **落库增量**（导入前后用例名差集）。`success:true` 但零落库会报错退出并点名上游 `getImportResponse` 契约弱点（success 仅由 errList 为空决定，与实际落库无关）——杜绝「看起来成功其实没写进去」。
+- **`batch-create` 新标志**：`--skip-existing`（写入前按项目分页精确同名查重，回执含 `跳过 K 个已存在`）；`--file-id` 可重复/`--file-id=` 形式（全部注入每条 `relateFileMetaIds`，去重保序）。
+- **`raw --service <resource>`**（或第 4 位置参数）：经 `service_prefix` 解析服务前缀，可显式命中单前缀路径（如 project-management 服务的 `/project/list/related`，用 `--service functional-template` → `project` 前缀）；不传时仍默认 `api`。
+- **`ms doctor`**：自检二进制（python3/openssl/curl）、必填 env、可选连通性探测，并打印 `skill-metadata.json` 版本 + git 短 SHA（非 git 树优雅跳过）。
+- **安装指定分支/标签**：`@<branch>` 会被 skills CLI 当作 skillFilter 而非 git ref；装非默认分支请用 `#` 片段：`npx skills add '<owner>/metersphere-skills#<branch-or-tag>' -s metersphere -a opencode -g`。
 
 ---
 
