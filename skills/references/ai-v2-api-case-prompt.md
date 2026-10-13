@@ -6,9 +6,11 @@
 ## 使用方式
 
 1. 先查接口定义 ID：`./skills/scripts/v2/ms.sh api list '{"projectId":"<projectId>"}'`
-2. 读取接口定义：`./skills/scripts/v2/ms.sh api get <apiId>`（拿到 method / path / 请求参数 / 响应结构）
-3. 把接口定义 JSON 贴给 AI，并附上下面提示词。
-4. 将 AI 返回的 JSON 保存为文件，用 `./skills/scripts/v2/ms.sh api-case create '<json>'` 写入。
+2. （针对「还没有接口用例的接口定义」）先找出缺口：分别拉 `api list` 与 `api-case list`（分页拉全），按 `apiDefinitionId` 求差集，得到尚无用例的定义清单。⚠️ 注意走双前缀路径的 `api-case list` 才是全量视图，单前缀 `related` 类接口只返回当前用户是成员的项目，可能为空列表（≠ 项目不存在）。
+3. 读取接口定义：`./skills/scripts/v2/ms.sh api get <apiId>`（拿到 method / path / 请求参数 / 响应结构，以及后续要复用的 `request` 字符串）
+4. 把接口定义 JSON 贴给 AI，并附上下面提示词。
+5. 将 AI 返回的 JSON 保存为文件，用 `./skills/scripts/v2/ms.sh api-case create '<json>'` 写入。
+   - **一步到位的替代**：`./skills/scripts/v2/ms.sh api-case generate-create <projectId> <definitionId>...` 会自动读取定义并生成带完整 `request` 的用例，无需手工拼装；本模板适合需要自定义用例设计（场景取舍、命名、标签）的场合。
 
 ## Prompt
 
@@ -17,24 +19,27 @@
 目标：
 
 1. 输出必须是**单个 JSON 对象**（一条接口用例），字段语义对齐 v2 `/api/testcase/create`：
-   - **必填**：`name`（用例标题，如 `获取用户详情-200`）、`projectId`（项目 ID，从接口定义中取，不要编造）、`apiDefinitionId`（接口定义 ID，从接口定义中取，不要编造）、`priority`（优先级，取值只能是 `P0` / `P1` / `P2` / `P3`）、`id`（uuid4，见下一条）
+   - **必填**：`name`（用例标题，如 `获取用户详情-200`）、`projectId`（项目 ID，从接口定义中取，不要编造）、`apiDefinitionId`（接口定义 ID，从接口定义中取，不要编造）、`priority`（优先级，取值只能是 `P0` / `P1` / `P2` / `P3`）、`id`（uuid4，见下一条）、`request`（完整 HTTPSamplerProxy 请求体对象，见第 3 条）
    - 可选：`description`（用例描述）、`tags`（标签，见「标签字段」一节）、`versionId`（仅当已知时提供）
 2. `id` **必须由你（客户端）提供**，取一个 uuid4。MeterSphere v2.10 的 `ApiTestCaseService.createTest()` 只做 `test.setId(request.getId())`，该文件里没有任何 `IDGenerator` 调用，服务端不会替你生成 id；缺 `id` 会落库失败（实测报 `Column 'id' cannot be null`）。`priority` 同理（`test.setPriority(request.getPriority())`，缺省报 `Column 'priority' cannot be null`）。
    - **版本差异**：MeterSphere v3.x 的 `ApiTestCaseService.addCase()` 在服务端 `testCase.setId(IDGenerator.nextStr())` 生成 id，所以走 `./skills/scripts/`（对接 v3.x）写入时可以不传 `id`；本模板面向 v2.10（`./skills/scripts/v2/`），必须传。
-3. 不要输出由服务端写入的字段：`num`（`createTest()` 内部 `getNextNum(...)` 生成）、`createTime` / `createUser`（服务端按当前用户与当前时间填充）；`caseStatus` 可省略，服务端缺省填 `Underway`。
-4. **标签字段 `tags`（可选）**：`tags` 是**可选**字段，要打标签时它的值必须是 **JSON 编码的字符串**，不是 JSON 数组。正确载荷是 `"tags": "[\"T-story-123\",\"T-tech-456\"]"`——最外层是一个被引号包裹的字符串，其内容本身才是 JSON 数组。写成裸数组 `"tags": ["T-story-123","T-tech-456"]` 会丢失标签。原因（MeterSphere v2.10 源码）：`SaveApiTestCaseRequest extends ApiTestCase`，实体字段是 `private String tags`；`ApiTestCaseService.createTest()` 以 `StringUtils.equals("[]", request.getTags())` 判断后原样存入。
+3. **`request` 必填，且不能是空壳**：创建体必须携带完整的 `request`（HTTPSamplerProxy 请求体对象）。`./skills/scripts/v2/ms.sh api-case create` 会在写入前校验：`request` 缺失、为空字符串或空对象都会被直接拒绝（zh-CN 报错并提示改用 `generate-create`）。原因（现场实测）：`request` 为空的用例虽然能列表展示，但在 MeterSphere GUI 里点「编辑」时表单无内容可绑定——GUI 创建的用例有完整 request、编辑页控件齐全；脚本创建的空 request 用例编辑页一片空白。最可靠的来源：以 `api get <definitionId>` 返回的 `request` 为基础，补上用例侧字段——sampler 内 `id` 填**接口定义 ID**（不是用例 ID）、`name` 填定义名、`refType: "CASE"`、`hashTree` 至少含一条 `Assertions` 断言元素。真实用例的 request 顶层形如 `{"type":"HTTPSamplerProxy","clazzName":"io.metersphere.api.dto...","id":"<定义ID>","name":"<定义名>","refType":"CASE","hashTree":[...],...}`（实测 2291 字符量级）。
+4. 不要输出由服务端写入的字段：`num`（`createTest()` 内部 `getNextNum(...)` 生成）、`createTime` / `createUser`（服务端按当前用户与当前时间填充）；`caseStatus` 可省略，服务端缺省填 `Underway`。
+5. **标签字段 `tags`（可选）**：`tags` 是**可选**字段，要打标签时它的值必须是 **JSON 编码的字符串**，不是 JSON 数组。正确载荷是 `"tags": "[\"T-story-123\",\"T-tech-456\"]"`——最外层是一个被引号包裹的字符串，其内容本身才是 JSON 数组。写成裸数组 `"tags": ["T-story-123","T-tech-456"]` 会丢失标签。原因（MeterSphere v2.10 源码）：`SaveApiTestCaseRequest extends ApiTestCase`，实体字段是 `private String tags`；`ApiTestCaseService.createTest()` 以 `StringUtils.equals("[]", request.getTags())` 判断后原样存入。
    - 不打标签就整体省略该键（合法）；写 `"tags": "[]"` 也合法，服务端会把它归一化为空串。
-5. 基于接口定义生成用例，优先覆盖：
+6. 基于接口定义生成用例，优先覆盖：
    - 成功场景（200）
    - 必填参数缺失
    - 非法类型 / 非法取值
    - 超长 / 边界值
    - 资源不存在
    - 权限不足（如果接口语义明显涉及权限）
-6. 用例名称用中文，风格为测试人员写法。
-7. 输出必须是**原始 JSON**，不要 markdown 代码块围栏（不要 ```json ... ```），不要解释性文字，确保可直接被 `python3 -m json.tool` 解析。
+7. 用例名称用中文，风格为测试人员写法。
+8. 输出必须是**原始 JSON**，不要 markdown 代码块围栏（不要 ```json ... ```），不要解释性文字，确保可直接被 `python3 -m json.tool` 解析。
 
-## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考，创建体只需 name/id/projectId/apiDefinitionId/priority）
+## 参考：真实 api-case 字段树（来自 `ms.sh api-case get` 实测响应，仅作字段参考；创建体必须包含 name/id/projectId/apiDefinitionId/priority/request，见「目标」第 1、3 条）
+
+> ⚠️ 下面这条样例恰好是一条**空壳用例**（`request: null`，早期脚本手工创建）——它正是现在被 `api-case create` 守卫拒绝、且 GUI 无法编辑的形态，仅作字段名参考，**不要**照此生成创建体。
 
 ```json
 {
@@ -70,9 +75,50 @@
   "projectId": "184896ef-073c-11f1-9f0a-0242ac1e0a08",
   "apiDefinitionId": "4b89bc21-214d-4c11-9acf-0bfc127e7b99",
   "priority": "P1",
-  "description": "验证使用有效用户 ID 获取用户详情的成功场景"
+  "description": "验证使用有效用户 ID 获取用户详情的成功场景",
+  "request": {
+    "type": "HTTPSamplerProxy",
+    "clazzName": "io.metersphere.api.dto.definition.request.sampler.MsHTTPSamplerProxy",
+    "id": "4b89bc21-214d-4c11-9acf-0bfc127e7b99",
+    "name": "获取用户详情",
+    "method": "GET",
+    "protocol": "HTTP",
+    "url": "http://example.com/api/user/1",
+    "path": "/api/user/1",
+    "domain": "",
+    "port": -1,
+    "headers": [],
+    "arguments": [],
+    "rest": [],
+    "body": {},
+    "hashTree": [
+      {
+        "type": "Assertions",
+        "name": "响应断言",
+        "variable": "responseCode",
+        "condition": "EQ",
+        "value": "200",
+        "enable": true
+      }
+    ],
+    "refType": "CASE",
+    "referenced": "Created",
+    "enable": true,
+    "active": false,
+    "followRedirects": true,
+    "autoRedirects": false,
+    "useEnvironment": "",
+    "environmentId": "",
+    "isRefEnvironment": false,
+    "connectTimeout": 60000,
+    "responseTimeout": 60000,
+    "customizeReq": false,
+    "doMultipartPost": false,
+    "postBodyProcessor": "NONE"
+  }
 }
 ```
 
 - `id` 是必填的客户端生成 uuid4（v2.10 服务端不生成，见「目标」第 2 条），可用 `python3 -c 'import uuid; print(uuid.uuid4())'` 现场生成。
+- `request` 是必填的完整 HTTPSamplerProxy（见「目标」第 3 条）。注意 sampler 内的 `id` 填**接口定义 ID**（与外层 `apiDefinitionId` 相同），不是用例 ID；`refType` 必须是 `"CASE"`；`hashTree` 至少含一条 `Assertions`。最可靠的做法是以 `api get <definitionId>` 返回的 `request` 为基础补用例侧字段，而不是从零手写。
 - `tags` 在这个示例里整体省略了（合法）。要打标签就加上 `"tags": "[\"T-story-123\",\"T-tech-456\"]"`——注意是 JSON 编码的**字符串**，不是裸数组。
