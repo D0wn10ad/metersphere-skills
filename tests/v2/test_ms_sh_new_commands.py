@@ -91,11 +91,14 @@ class RecordingHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(payload)
 
-    def _read_body(self):
+    def _read_raw(self):
         length = int(self.headers.get("Content-Length", 0))
         if not length:
-            return ""
-        return self.rfile.read(length).decode("utf-8", errors="replace")
+            return b""
+        return self.rfile.read(length)
+
+    def _read_body(self):
+        return self._read_raw().decode("utf-8", errors="replace")
 
     def do_GET(self):
         self.server.requests.append(("GET", self.path, self._read_body()))
@@ -120,8 +123,15 @@ class RecordingHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found: %s" % self.path})
 
     def do_POST(self):
-        body = self._read_body()
+        raw = self._read_raw()
+        if self.path == "/track/test/case/import":
+            self.server.import_raw_bodies.append(raw)
+        body = raw.decode("utf-8", errors="replace")
         self.server.requests.append(("POST", self.path, body))
+        if self.path == "/track/file/metadata/create":
+            self._send(200, {"success": True,
+                             "data": [{"id": "file-new", "name": "a.xlsx"}]})
+            return
         if self.path == "/track/file/module/add":
             received = extract_request_field(body)
             self.server.file_module_bodies.append(received)
@@ -221,6 +231,10 @@ class RecordingServer(object):
         return self.httpd.file_module_bodies
 
     @property
+    def import_raw_bodies(self):
+        return self.httpd.import_raw_bodies
+
+    @property
     def unrelated_bodies(self):
         return self.httpd.unrelated_bodies
 
@@ -249,6 +263,7 @@ def recorder():
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), RecordingHandler)
     httpd.requests = []
     httpd.import_bodies = []
+    httpd.import_raw_bodies = []
     httpd.file_module_bodies = []
     httpd.unrelated_bodies = []
     httpd.relate_demand_bodies = []
@@ -501,6 +516,19 @@ def test_file_module_create_without_project_dies(recorder):
     assert "拒绝写入" in proc.stderr, "stderr=%s" % proc.stderr
     assert not [p for _m, p, _b in recorder.requests
                 if "/file/module/add" in p]
+
+
+def test_file_create_no_misleading_stderr(recorder, tmp_path):
+    """file create 成功时不得泄漏 resource_paths 的「不支持的资源: file」噪音。"""
+    xlsx = tmp_path / "a.xlsx"
+    xlsx.write_bytes(b"PK\x03\x04 fake")
+    proc = run_ms_sh(["file", "create",
+                      json.dumps({"id": "file-new", "projectId": PROJECT_ID,
+                                  "storage": "MINIO", "name": "a.xlsx"}),
+                      str(xlsx)], recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert "不支持的资源" not in (proc.stderr + proc.stdout), (
+        "成功路径不得泄漏 resource_paths 报错：stderr=%s" % proc.stderr)
 
 
 # --------------------------------------------------------------------------

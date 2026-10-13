@@ -316,6 +316,9 @@ resource_paths() {
     file-module)
       echo "$METERSPHERE_FILE_MODULE_LIST_PATH|$METERSPHERE_FILE_MODULE_CREATE_PATH"
       ;;
+    file)
+      echo "$METERSPHERE_FILE_METADATA_LIST_PATH|$METERSPHERE_FILE_METADATA_INFO_PATH|$METERSPHERE_FILE_METADATA_CREATE_PATH"
+      ;;
     *)
       die "不支持的资源: $1"
       ;;
@@ -415,7 +418,7 @@ v2 使用 workspace 而非 organization；分页为路径参数 {goPage}/{pageSi
   ms attachment download <attachmentId> <isLocal> <outfile>
   ms attachment delete <attachmentId>
   ms functional-case template <projectId> [Create|Update] [outfile]
-  ms functional-case import <projectId> <excel-or-xmind-file> --import-type Create
+   ms functional-case import <projectId> <excel-or-xmind-file> --import-type Create [--fix-status <v>] [--default-maintainer <user>]
   ms functional-case relate-demand <projectId> <demandId> <caseId> [<caseId>...]
   ms file list <projectId> [goPage] [pageSize]
   ms file get <fileId> [outfile]
@@ -2117,6 +2120,8 @@ PY
     [[ "$resource" == "functional-case" ]] || die "import 仅支持 functional-case 资源"
     import_type="Create"
     version_id=""
+    fix_status=""
+    default_maintainer=""
     import_args=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -2138,6 +2143,24 @@ PY
           version_id="${1#--version-id=}"
           shift
           ;;
+        --fix-status)
+          [[ $# -ge 2 ]] || die "--fix-status 需要值（模板字段选项，如 Finished）"
+          fix_status="$2"
+          shift 2
+          ;;
+        --fix-status=*)
+          fix_status="${1#--fix-status=}"
+          shift
+          ;;
+        --default-maintainer)
+          [[ $# -ge 2 ]] || die "--default-maintainer 需要值（项目成员名或 ID）"
+          default_maintainer="$2"
+          shift 2
+          ;;
+        --default-maintainer=*)
+          default_maintainer="${1#--default-maintainer=}"
+          shift
+          ;;
         *)
           import_args+=("$1")
           shift
@@ -2150,6 +2173,49 @@ PY
     excel_file="${import_args[1]:-}"
     [[ -n "$excel_file" ]] || die "functional-case import 需要 excel/xmind 文件"
     [[ -f "$excel_file" ]] || die "functional-case import 文件不存在: $excel_file"
+    norm_dir=""
+    if [[ -n "$fix_status" || -n "$default_maintainer" ]]; then
+      [[ "${excel_file##*.}" == "xlsx" ]] || die "--fix-status/--default-maintainer 仅支持 .xlsx（xmind 无列概念）"
+      norm_dir="$(mktemp -d)"
+      normalized_file="$norm_dir/$(basename "$excel_file")"
+      cp "$excel_file" "$normalized_file"
+      norm_out="$(python3 - "$normalized_file" "$fix_status" "$default_maintainer" <<'PY'
+import sys
+try:
+    from openpyxl import load_workbook
+    from openpyxl.cell.cell import MergedCell
+except ImportError:
+    print("ERR:需要 openpyxl（pip install openpyxl）"); sys.exit(1)
+src, fix_status, default_maintainer = sys.argv[1:4]
+wb = load_workbook(src)
+ws = wb.active
+header = {}
+for c in ws[1]:
+    if c.value is not None:
+        header.setdefault(str(c.value).strip().casefold(), c.column)
+status_col = header.get("case status") or header.get("用例状态")
+maintainer_col = header.get("maintainer") or header.get("责任人")
+fixed_status = fixed_maintainer = 0
+for row in ws.iter_rows(min_row=2):
+    sc = row[status_col - 1] if status_col else None
+    if fix_status and sc is not None and not isinstance(sc, MergedCell) \
+            and sc.value not in (None, ""):
+        sc.value = fix_status
+        fixed_status += 1
+    mc = row[maintainer_col - 1] if maintainer_col else None
+    if default_maintainer and mc is not None and not isinstance(mc, MergedCell) \
+            and mc.value in (None, ""):
+        mc.value = default_maintainer
+        fixed_maintainer += 1
+wb.save(src)
+print("OK:%d:%d" % (fixed_status, fixed_maintainer))
+PY
+)" || { rm -rf "$norm_dir"; die "functional-case import 预处理失败: ${norm_out#ERR:}"; }
+      [[ "$norm_out" == OK:* ]] || { rm -rf "$norm_dir"; die "functional-case import 预处理失败: $norm_out"; }
+      IFS=: read -r _ fixed_status_n fixed_maintainer_n <<< "$norm_out"
+      excel_file="$normalized_file"
+      echo "已生成规范化副本（原文件未改动）: 用例状态改写 ${fixed_status_n} 行 / 责任人补填 ${fixed_maintainer_n} 行"
+    fi
     require_project_id
     import_body="{\"projectId\":\"$project_id\",\"importType\":\"$import_type\",\"ignore\":false"
     if [[ -n "$version_id" ]]; then
@@ -2163,10 +2229,12 @@ PY
     signature="$(generate_signature)"
     before_names="$(fetch_functional_case_names "$project_id")" || {
       rm -f "$tmp_json"
+      [[ -z "$norm_dir" ]] || rm -rf "$norm_dir"
       die "functional-case import 导入前用例列表查询失败"
     }
     if [[ "$before_names" == ERR:* ]]; then
       rm -f "$tmp_json"
+      [[ -z "$norm_dir" ]] || rm -rf "$norm_dir"
       die "functional-case import 导入前用例列表查询失败: ${before_names#ERR:}"
     fi
     http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
@@ -2176,6 +2244,7 @@ PY
       -F "file=@${excel_file}" \
       "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_CASE_IMPORT_PATH}")"
     rm -f "$tmp_json"
+    [[ -z "$norm_dir" ]] || rm -rf "$norm_dir"
     http_code="${http_out##*$'\n'}"
     resp="${http_out%$'\n'*}"
     printf '%s\n' "$resp"
