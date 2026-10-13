@@ -66,6 +66,17 @@ def test_import_success_true_but_zero_landing_fails(stub_server):
         "stderr 应显式点名上游契约弱点：%s" % proc.stderr)
 
 
+def test_import_template_field_errors_show_hints(stub_server):
+    """行级模板校验失败（用例状态/责任人）→ die 且 stderr 附带修复提示。"""
+    proc = run_import(stub_server, fail_mode="import_template_error")
+    assert proc.returncode != 0, "模板校验失败必须失败退出：%s" % proc.stdout
+    assert "用例状态" in proc.stderr and "Finished" in proc.stderr, (
+        "stderr 应透出服务端行级错误：%s" % proc.stderr)
+    assert "评审状态" in proc.stderr, "应提示 Pass 属评审状态而非用例状态：%s" % proc.stderr
+    assert "责任人" in proc.stderr and "项目成员" in proc.stderr, (
+        "应提示责任人为必填的项目成员：%s" % proc.stderr)
+
+
 def test_import_success_true_with_positive_landing_ok(stub_server):
     """(c) success:true 且落库增量 > 0 → exit 0，stdout 打印新增条数。"""
     proc = run_import(stub_server)

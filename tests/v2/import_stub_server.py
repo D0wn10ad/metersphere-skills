@@ -242,6 +242,16 @@ class StubHandler(BaseHTTPRequestHandler):
                 self._send(200, {"success": True, "errList": [],
                                  "isUpdated": False})
                 return
+            if mode == "import_template_error":
+                # 模板字段校验失败模拟：行级 errList（用例状态选项不符 + 责任人必填）
+                self._send(200, {"success": False, "message": "import error",
+                                 "errList": [
+                                     {"rowNum": 1,
+                                      "errMsg": "[用例状态] must be [Finished, Running, Prepare]"},
+                                     {"rowNum": 1,
+                                      "errMsg": "[责任人] 不能为空"},
+                                 ]})
+                return
             with LOCK:
                 state = load_state(self.state_path)
                 cases = state.setdefault("functional_cases", [])
