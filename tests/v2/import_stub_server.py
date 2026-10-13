@@ -101,9 +101,12 @@ class StubHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _read_body(self):
+    def _read_raw(self):
         length = int(self.headers.get("Content-Length", 0))
-        return self.rfile.read(length).decode("utf-8", errors="replace") if length else ""
+        return self.rfile.read(length) if length else b""
+
+    def _read_body(self):
+        return self._read_raw().decode("utf-8", errors="replace")
 
     def do_GET(self):
         if self.path == "/":
@@ -127,7 +130,9 @@ class StubHandler(BaseHTTPRequestHandler):
         self._send(404, {"error": "not found: %s" % self.path})
 
     def do_POST(self):
-        body = self._read_body()
+        raw = self._read_raw()
+        self._last_raw = raw
+        body = raw.decode("utf-8", errors="replace")
         # POST /api/api/definition/import（multipart，不解析，正则扫 operationId）
         if self.path == "/api/api/definition/import":
             m = re.search(r'"operationId"\s*:\s*"([^"]*)"', body)
@@ -230,6 +235,9 @@ class StubHandler(BaseHTTPRequestHandler):
             return
         # POST /track/test/case/import（功能用例 excel/xmind 导入，multipart request+file）
         if self.path == "/track/test/case/import":
+            with LOCK:
+                with open(self.state_path + ".import.raw", "wb") as fh:
+                    fh.write(self._last_raw)
             mode = fail_mode()
             if mode == "import_500":
                 self._send(500, {"success": False,

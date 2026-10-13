@@ -431,7 +431,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 - `generate` 本地生成 v2 草稿（`skills/scripts/v2/ms_generate.py`），不写入；`batch-create` 批量写入（JSON 数组文件）；`generate-create` 生成后直接批量写入，一步到位。
 - `batch-create --file-id <fileMetadataId>` 把项目文件库文件注入每条用例的 `relateFileMetaIds`（库文件零拷贝，详见下方「项目文件库」）。
 - `template` 下载 excel 导入模板（二进制 xlsx；`importType` 仅 `Create|Update`，默认 `Create`；省略 outfile 时输出到 stdout）。
-- `import` excel/xmind 导入（multipart 双 part `request`+`file`；`.xmind` 同端点，服务端按扩展名分发到 XmindCaseParser；request 体仅需 `{projectId, importType, ignore:false[, versionId]}`，userId 由服务端自行填充）。
+- `import` excel/xmind 导入（multipart 双 part `request`+`file`；`.xmind` 同端点，服务端按扩展名分发到 XmindCaseParser；request 体仅需 `{projectId, importType, ignore:false[, versionId]}`，userId 由服务端自行填充）。xlsx 非导入就绪时可用 `--fix-status <选项值>`（改写所有非空「用例状态」单元格，如 `Finished`）与 `--default-maintainer <成员>`（补填空「责任人」）——**在临时副本上规范化后上传副本，原文件绝不改动**（需 openpyxl；合并单元格只写锚点行）。
 - `relate-demand` 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出；body `{ids:[...], demandId, demandName}`；`demandId` 为 `other` 时必须提供 `--demand-name`）。
 - `split-create` 一键拆分写入（见下方「测试用例文件拆分写入」）。
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
