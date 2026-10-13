@@ -506,6 +506,8 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 - **`batch-create` 新标志**：`--skip-existing`（写入前按项目分页精确同名查重，回执含 `跳过 K 个已存在`）；`--file-id` 可重复/`--file-id=` 形式（全部注入每条 `relateFileMetaIds`，去重保序）。
 - **`raw --service <resource>`**（或第 4 位置参数）：经 `service_prefix` 解析服务前缀，可显式命中单前缀路径（如 project-management 服务的 `/project/list/related`，用 `--service functional-template` → `project` 前缀）；不传时仍默认 `api`。
 - **`ms doctor`**：自检二进制（python3/openssl/curl）、必填 env、可选连通性探测，并打印 `skill-metadata.json` 版本 + git 短 SHA（非 git 树优雅跳过）。
+- **导入列校验走项目模板字段**：excel 列按列名匹配项目模板的自定义字段（`TestCaseNoModelDataListener.validateCustomField`），值必须是该模板字段的选项——「用例状态」在典型模板中为 `Finished/Running/Prepare`（填评审状态值 `Pass`/`UN_PASS` 会被逐行拒绝）；「责任人」为必填，须为项目成员。行级错误经 `errList` 原样透出，import 失败时客户端自动附带修复提示。
+- **`functional-case list` 分页循环合并**：自动循环 `goPage` 拉全所有页并合并为 `{"success":true,"data":[全部用例]}`（body 里的 `pageSize` 仅作每页大小，缺省 100；省略 body 时回退 `METERSPHERE_PROJECT_ID`）。
 - **安装指定分支/标签**：`@<branch>` 会被 skills CLI 当作 skillFilter 而非 git ref；装非默认分支请用 `#` 片段：`npx skills add '<owner>/metersphere-skills#<branch-or-tag>' -s metersphere -a opencode -g`。
 
 ---

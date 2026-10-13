@@ -147,10 +147,14 @@ class RecordingHandler(BaseHTTPRequestHandler):
             return
         m = re.match(r"^/track/test/case/list/(\d+)/(\d+)$", self.path)
         if m:
+            go_page, page_size = int(m.group(1)), int(m.group(2))
             items = [{"id": c["id"], "name": c["name"]}
                      for c in self.server.functional_cases]
+            start = (go_page - 1) * page_size
+            page_count = max(1, -(-len(items) // page_size)) if page_size else 1
             self._send(200, {"success": True, "data": {
-                "listObject": items, "pageCount": 1, "itemCount": len(items)}})
+                "listObject": items[start:start + page_size],
+                "pageCount": page_count, "itemCount": len(items)}})
             return
         if re.match(r"^/track/file/metadata/project/[^/]+/\d+/\d+$", self.path):
             self._send(200, {"success": True, "data": {
@@ -510,6 +514,32 @@ def test_raw_default_uses_api_prefix(recorder):
     paths = [path for _m, path, _b in recorder.requests
              if path.endswith("/system/version")]
     assert paths == ["/api/system/version"], "路径不符：%s" % paths
+
+
+def test_functional_case_list_loops_and_combines_pages(recorder):
+    """functional-case list 循环分页并合并：跨页用例全部返回。"""
+    recorder.httpd.functional_cases.extend(
+        {"id": "fc-extra-%d" % k, "name": "额外用例-%d" % k} for k in range(5))
+    total = len(recorder.httpd.functional_cases)
+    proc = run_ms_sh(["functional-case", "list",
+                      json.dumps({"projectId": PROJECT_ID, "pageSize": 2})],
+                     recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    doc = json.loads(proc.stdout)
+    assert doc["success"] is True, "stdout=%s" % proc.stdout
+    names = [it["name"] for it in doc["data"]]
+    assert len(names) == total, "应合并全部分页（%d 条）：%s" % (total, names)
+    assert "额外用例-4" in names, "最后一页的用例应在合并结果中：%s" % names
+
+
+def test_functional_case_list_requires_project(recorder):
+    """body 缺 projectId → zh-CN 报错退出，不发请求。"""
+    proc = run_ms_sh(["functional-case", "list", json.dumps({"pageSize": 2})],
+                     recorder.base_url, project_id="")
+    assert proc.returncode != 0
+    assert "projectId" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not [p for _m, p, _b in recorder.requests
+                if "/test/case/list/" in p]
 
 
 def test_raw_service_flag_resolves_prefix(recorder):
