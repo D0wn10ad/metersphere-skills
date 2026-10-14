@@ -166,6 +166,26 @@ class RecordingHandler(BaseHTTPRequestHandler):
                 "listObject": items[start:start + page_size],
                 "pageCount": page_count, "itemCount": len(items)}})
             return
+        m = re.match(r"^/api/api/definition/list/(\d+)/(\d+)$", self.path)
+        if m:
+            go_page, page_size = int(m.group(1)), int(m.group(2))
+            items = self.server.api_definitions
+            start = (go_page - 1) * page_size
+            page_count = max(1, -(-len(items) // page_size)) if page_size else 1
+            self._send(200, {"success": True, "data": {
+                "listObject": items[start:start + page_size],
+                "pageCount": page_count, "itemCount": len(items)}})
+            return
+        m = re.match(r"^/api/api/testcase/list/(\d+)/(\d+)$", self.path)
+        if m:
+            go_page, page_size = int(m.group(1)), int(m.group(2))
+            items = self.server.api_testcases
+            start = (go_page - 1) * page_size
+            page_count = max(1, -(-len(items) // page_size)) if page_size else 1
+            self._send(200, {"success": True, "data": {
+                "listObject": items[start:start + page_size],
+                "pageCount": page_count, "itemCount": len(items)}})
+            return
         if re.match(r"^/track/file/metadata/project/[^/]+/\d+/\d+$", self.path):
             self._send(200, {"success": True, "data": {
                 "listObject": [], "pageCount": 1, "itemCount": 0}})
@@ -265,6 +285,8 @@ def recorder():
     httpd.import_bodies = []
     httpd.import_raw_bodies = []
     httpd.file_module_bodies = []
+    httpd.api_definitions = []
+    httpd.api_testcases = []
     httpd.unrelated_bodies = []
     httpd.relate_demand_bodies = []
     httpd.batch_create_bodies = []
@@ -531,6 +553,27 @@ def test_file_create_no_misleading_stderr(recorder, tmp_path):
         "成功路径不得泄漏 resource_paths 报错：stderr=%s" % proc.stderr)
 
 
+def test_project_create_rejected_with_permission_guidance(recorder):
+    """project create 需工作空间管理员 → 快速失败并指引用 Web 端创建，不发请求。"""
+    proc = run_ms_sh(["project", "create",
+                      json.dumps({"name": "p1", "workspaceId": "w1"})],
+                     recorder.base_url)
+    assert proc.returncode != 0
+    assert "WORKSPACE_PROJECT_MANAGER_READ_CREATE" in proc.stderr, (
+        "stderr 应点名所需权限：%s" % proc.stderr)
+    assert "project list" in proc.stderr, "stderr 应指引确认方式：%s" % proc.stderr
+    assert not recorder.requests, "不应发出任何请求：%s" % recorder.requests
+
+
+def test_unsupported_create_rejected_without_request(recorder):
+    """未配置创建端点的资源（functional-module create）→ 快速失败，不发请求。"""
+    proc = run_ms_sh(["functional-module", "create",
+                      json.dumps({"name": "m1"})], recorder.base_url)
+    assert proc.returncode != 0
+    assert "不支持 create" in proc.stderr, "stderr=%s" % proc.stderr
+    assert not recorder.requests, "不应发出任何请求：%s" % recorder.requests
+
+
 # --------------------------------------------------------------------------
 # G6: raw 服务前缀覆盖
 # --------------------------------------------------------------------------
@@ -568,6 +611,39 @@ def test_functional_case_list_requires_project(recorder):
     assert "projectId" in proc.stderr, "stderr=%s" % proc.stderr
     assert not [p for _m, p, _b in recorder.requests
                 if "/test/case/list/" in p]
+
+
+def test_api_list_loops_and_combines_pages(recorder):
+    """api list 循环分页并合并（双前缀 /api/api/...）：跨页定义全部返回。"""
+    recorder.httpd.api_definitions.extend(
+        {"id": "def-%d" % k, "name": "接口-%d" % k} for k in range(5))
+    proc = run_ms_sh(["api", "list",
+                      json.dumps({"projectId": PROJECT_ID, "pageSize": 2})],
+                     recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    doc = json.loads(proc.stdout)
+    assert doc["success"] is True, "stdout=%s" % proc.stdout
+    names = [it["name"] for it in doc["data"]]
+    assert len(names) == 5, "应合并全部分页：%s" % names
+    assert "接口-4" in names, "最后一页的定义应在合并结果中：%s" % names
+    paths = [p for _m, p, _b in recorder.requests if "/definition/list/" in p]
+    assert all(p.startswith("/api/api/") for p in paths), (
+        "api list 必须走双前缀：%s" % paths)
+
+
+def test_api_case_list_loops_and_combines_pages(recorder):
+    """api-case list 循环分页并合并：跨页用例全部返回。"""
+    recorder.httpd.api_testcases.extend(
+        {"id": "case-%d" % k, "name": "接口用例-%d" % k} for k in range(3))
+    proc = run_ms_sh(["api-case", "list",
+                      json.dumps({"projectId": PROJECT_ID, "pageSize": 2})],
+                     recorder.base_url)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    doc = json.loads(proc.stdout)
+    assert doc["success"] is True, "stdout=%s" % proc.stdout
+    names = [it["name"] for it in doc["data"]]
+    assert len(names) == 3, "应合并全部分页：%s" % names
+    assert "接口用例-2" in names, "最后一页的用例应在合并结果中：%s" % names
 
 
 def test_raw_service_flag_resolves_prefix(recorder):
