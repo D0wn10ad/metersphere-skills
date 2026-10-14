@@ -131,3 +131,75 @@ def test_import_normalize_fixes_status_and_maintainer(stub_server):
         if not isinstance(mc, MergedCell):
             assert mc.value == "admin", (
                 "空 Maintainer 应补填 admin，实际=%r" % mc.value)
+
+
+def _read_accept_language(stub_server):
+    with open(stub_server.state_path + ".import.headers", "r",
+              encoding="utf-8") as fh:
+        return fh.read().strip()
+
+
+def test_import_autodetects_en_headers(stub_server):
+    """EN 表头文件 → 自动发 Accept-Language: en-US（服务端按 locale 选表头规则集）。"""
+    fixture = os.path.join(REPO_ROOT, "tests", "v2", "fixtures",
+                           "import_case_documented.xlsx")
+    env = dict(os.environ)
+    env.update({
+        "METERSPHERE_BASE_URL": stub_server.base_url,
+        "METERSPHERE_ACCESS_KEY": FAKE_ACCESS_KEY,
+        "METERSPHERE_SECRET_KEY": FAKE_SECRET_KEY,
+        "METERSPHERE_PROJECT_ID": PROJECT_ID,
+        "METERSPHERE_VERSION": "v2",
+        "METERSPHERE_WORKSPACE_ID": "",
+    })
+    proc = subprocess.run(
+        ["bash", MS_SH, "functional-case", "import", PROJECT_ID, fixture],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert "自动匹配语言: en" in proc.stdout, "stdout=%s" % proc.stdout
+    assert _read_accept_language(stub_server) == "en-US", (
+        "EN 表头必须带 Accept-Language: en-US")
+
+
+def test_import_autodetects_cn_headers(stub_server):
+    """CN 表头文件 → 自动发 Accept-Language: zh-CN（否则服务端报 missing header）。"""
+    fixture = os.path.join(REPO_ROOT, "tests", "v2", "fixtures",
+                           "import_case_cn_headers.xlsx")
+    env = dict(os.environ)
+    env.update({
+        "METERSPHERE_BASE_URL": stub_server.base_url,
+        "METERSPHERE_ACCESS_KEY": FAKE_ACCESS_KEY,
+        "METERSPHERE_SECRET_KEY": FAKE_SECRET_KEY,
+        "METERSPHERE_PROJECT_ID": PROJECT_ID,
+        "METERSPHERE_VERSION": "v2",
+        "METERSPHERE_WORKSPACE_ID": "",
+    })
+    proc = subprocess.run(
+        ["bash", MS_SH, "functional-case", "import", PROJECT_ID, fixture],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert "自动匹配语言: zh" in proc.stdout, "stdout=%s" % proc.stdout
+    assert _read_accept_language(stub_server) == "zh-CN", (
+        "CN 表头必须带 Accept-Language: zh-CN")
+
+
+def test_import_lang_flag_overrides_autodetect(stub_server):
+    """显式 --lang 覆盖自动探测。"""
+    fixture = os.path.join(REPO_ROOT, "tests", "v2", "fixtures",
+                           "import_case_documented.xlsx")
+    env = dict(os.environ)
+    env.update({
+        "METERSPHERE_BASE_URL": stub_server.base_url,
+        "METERSPHERE_ACCESS_KEY": FAKE_ACCESS_KEY,
+        "METERSPHERE_SECRET_KEY": FAKE_SECRET_KEY,
+        "METERSPHERE_PROJECT_ID": PROJECT_ID,
+        "METERSPHERE_VERSION": "v2",
+        "METERSPHERE_WORKSPACE_ID": "",
+    })
+    proc = subprocess.run(
+        ["bash", MS_SH, "functional-case", "import", PROJECT_ID, fixture,
+         "--lang", "zh"],
+        cwd=REPO_ROOT, env=env, capture_output=True, text=True, timeout=180)
+    assert proc.returncode == 0, "stderr=%s" % proc.stderr
+    assert _read_accept_language(stub_server) == "zh-CN", (
+        "--lang zh 必须覆盖自动探测")

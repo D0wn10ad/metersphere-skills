@@ -2158,6 +2158,7 @@ PY
     version_id=""
     fix_status=""
     default_maintainer=""
+    import_lang=""
     import_args=()
     while [[ $# -gt 0 ]]; do
       case "$1" in
@@ -2195,6 +2196,15 @@ PY
           ;;
         --default-maintainer=*)
           default_maintainer="${1#--default-maintainer=}"
+          shift
+          ;;
+        --lang)
+          [[ $# -ge 2 ]] || die "--lang 需要值（en|zh|tw，对应 EN/CN/TW 模板表头）"
+          import_lang="$2"
+          shift 2
+          ;;
+        --lang=*)
+          import_lang="${1#--lang=}"
           shift
           ;;
         *)
@@ -2252,6 +2262,47 @@ PY
       excel_file="$normalized_file"
       echo "已生成规范化副本（原文件未改动）: 用例状态改写 ${fixed_status_n} 行 / 责任人补填 ${fixed_maintainer_n} 行"
     fi
+    # 表头语言：服务端按请求 locale 选定唯一可接受的表头集（TestCaseExcelDataUs/Cn/Tw，
+    # LocaleContextHolder.getLocale()），不匹配即报 case_import_table_header_missing。
+    # --lang 显式指定；缺省时对 xlsx 自动探测首行表头（需 openpyxl，失败则不发 Accept-Language）。
+    accept_language=""
+    if [[ -n "$import_lang" ]]; then
+      case "$import_lang" in
+        en) accept_language="en-US" ;;
+        zh) accept_language="zh-CN" ;;
+        tw) accept_language="zh-TW" ;;
+        *) die "--lang 仅支持 en|zh|tw（对应 EN/CN/TW 模板表头）" ;;
+      esac
+    elif [[ "${excel_file##*.}" == "xlsx" ]]; then
+      lang_out="$(python3 - "$excel_file" <<'PY'
+import sys
+try:
+    from openpyxl import load_workbook
+except ImportError:
+    print("OK:"); sys.exit(0)
+wb = load_workbook(sys.argv[1], read_only=True)
+ws = wb.active
+cells = [str(c.value).strip().casefold() for c in next(ws.iter_rows(min_row=1, max_row=1), []) if c.value is not None]
+wb.close()
+if "name" in cells and "用例名称" not in cells:
+    print("OK:en")
+elif "用例名称" in cells:
+    print("OK:zh")
+elif "用例名稱" in cells:
+    print("OK:tw")
+else:
+    print("OK:")
+PY
+)" || lang_out="OK:"
+      [[ "$lang_out" == OK:* ]] || lang_out="OK:"
+      detected_lang="${lang_out#OK:}"
+      case "$detected_lang" in
+        en) accept_language="en-US" ;;
+        zh) accept_language="zh-CN" ;;
+        tw) accept_language="zh-TW" ;;
+      esac
+      [[ -z "$detected_lang" ]] || echo "已按文件表头自动匹配语言: $detected_lang (Accept-Language: $accept_language)"
+    fi
     require_project_id
     import_body="{\"projectId\":\"$project_id\",\"importType\":\"$import_type\",\"ignore\":false"
     if [[ -n "$version_id" ]]; then
@@ -2276,6 +2327,7 @@ PY
     http_out="$(curl -sS -w $'\n%{http_code}' -X POST \
       -H "accessKey: $METERSPHERE_ACCESS_KEY" \
       -H "signature: $signature" \
+      ${accept_language:+-H "Accept-Language: $accept_language"} \
       -F "request=@${tmp_json};type=application/json" \
       -F "file=@${excel_file}" \
       "${METERSPHERE_BASE_URL%/}/track${METERSPHERE_CASE_IMPORT_PATH}")"
