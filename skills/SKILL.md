@@ -387,6 +387,27 @@ METERSPHERE_DEFAULT_VERSION_ID=  # 默认版本 ID (避免使用硬编码值)
 - `delete`：删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
 - 草稿增强可参考 `references/ai-v2-functional-case-prompt.md`；Phabricator 工单 + excel 模板双输入可参考 `references/ai-phabricator-functional-case-prompt.md`；excel 模板 + 原文件共享关联（含文件夹选择）可参考 `references/ai-excel-template-shared-attachment-prompt.md`。
 
+### 3.0b 接口用例（api-case，v2）
+
+```bash
+./scripts/v2/ms.sh api list '{"projectId":"<projectId>"}'
+./scripts/v2/ms.sh api-case list '{"projectId":"<projectId>"}'
+./scripts/v2/ms.sh api get <apiId>
+./scripts/v2/ms.sh api-case generate-create [--tags <标签[,标签...]>] <projectId> [<definitionId>...]
+./scripts/v2/ms.sh api-case create '<json>'
+./scripts/v2/ms.sh api import-generate <projectId> [moduleId] <spec.json-or-url>
+./scripts/v2/ms.sh api import-create <projectId> [moduleId] <spec.json-or-url>
+./scripts/v2/ms.sh api batch-create <json-file>
+```
+
+- `api list` / `api-case list`：自动分页循环合并为 `{"success":true,"data":[全部]}`（body `pageSize` 仅作每页大小，缺省 100；双前缀 `/api/api/...` 全量视图）。
+- `generate-create`：为**已存在**的接口定义批量生成 3 变体用例（成功场景/必填缺失/边界场景）并写入；不传 definitionId = 项目内全部 HTTP 定义。
+- `import-create`：Swagger/OpenAPI 3 一步导入定义 + 生成用例（幂等，重跑跳过已存在同名变体）；`import-generate` 只生成草稿不写入。
+- 触发路由（用户意图 → 参考模板）：
+  - 「读取已有接口并生成接口用例 / 补齐无用例的接口」→ 读 `references/ai-existing-api-to-cases-prompt.md`
+  - 「从 Swagger/OpenAPI 3 JSON 生成接口定义和用例」→ 读 `references/ai-swagger-to-api-cases-prompt.md`
+  - 单条用例字段级契约（id/priority/request/tags）→ 读 `references/ai-v2-api-case-prompt.md`
+
 ### 3.1 测试用例文件拆分写入（split-create，v2）
 
 把测试用例文件（docx/pdf/xlsx/xmind）一键拆分为多条用例并关联原文件：
