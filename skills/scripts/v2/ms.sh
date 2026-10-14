@@ -1590,21 +1590,21 @@ PY
 # 分页循环拉全并合并：body 的 pageSize 仅作每页大小，goPage 由脚本循环控制，
 # 输出 {"success":true,"data":[全部页合并后的数组]}。用法: paged_post_list <service_prefix> <list_path> <body_json>
 paged_post_list() {
-  local prefix="$1" list_path="$2" body_raw="$3"
+  local prefix="$1" list_path="$2" body_raw="$3" require_project="${4:-}"
   need_base_url
   need_keys
   local signature
   signature="$(generate_signature)"
-  python3 - "$prefix" "$list_path" "$body_raw" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" <<'PY'
+  python3 - "$prefix" "$list_path" "$body_raw" "${METERSPHERE_BASE_URL%/}" "$METERSPHERE_ACCESS_KEY" "$signature" "$require_project" <<'PY'
 import json, sys, urllib.error, urllib.request
-prefix, list_path, body_raw, base_url, access_key, signature = sys.argv[1:7]
+prefix, list_path, body_raw, base_url, access_key, signature, require_project = sys.argv[1:8]
 try:
     user_body = json.loads(body_raw)
     if not isinstance(user_body, dict):
         raise ValueError
 except Exception:
     print("ERR:list body 需为 JSON 对象", file=sys.stderr); sys.exit(1)
-if not user_body.get("projectId"):
+if require_project == "1" and not user_body.get("projectId"):
     print("ERR:list body 需要 projectId", file=sys.stderr); sys.exit(1)
 page_size = int(user_body.get("pageSize") or 100)
 items, go_page = [], 1
@@ -1721,13 +1721,18 @@ case "$action" in
         [[ -n "${METERSPHERE_PROJECT_ID:-}" ]] || die "functional-case list 需要 JSON body（含 projectId）或设置 METERSPHERE_PROJECT_ID"
         list_body="{\"projectId\":\"$METERSPHERE_PROJECT_ID\"}"
       fi
-      paged_post_list "$service_prefix" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH" "$list_body"
+      paged_post_list "$service_prefix" "$METERSPHERE_FUNCTIONAL_CASE_LIST_PATH" "$list_body" 1
     elif [[ "$resource" == "api" || "$resource" == "api-case" ]]; then
       # 分页循环拉全并合并（同 functional-case；api 走双前缀 /api/api/...）
       list_body="${arg:-}"
       if [[ -z "$list_body" || "$list_body" == "-" ]]; then
         [[ -n "${METERSPHERE_PROJECT_ID:-}" ]] || die "$resource list 需要 JSON body（含 projectId）或设置 METERSPHERE_PROJECT_ID"
         list_body="{\"projectId\":\"$METERSPHERE_PROJECT_ID\"}"
+      fi
+      if [[ "$list_body" == \{* ]]; then
+        list_body="$(normalize_json_with_defaults "$resource" "$list_body")"
+      else
+        list_body="$(default_list_payload "$resource" "$list_body")"
       fi
       if [[ "$resource" == "api" ]]; then
         paged_post_list "$service_prefix" "$METERSPHERE_API_DEFINITION_LIST_PATH" "$list_body"
