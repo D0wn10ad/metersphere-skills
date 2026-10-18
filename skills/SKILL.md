@@ -491,7 +491,7 @@ v2 的「项目文件库」文件可被多个用例共享（同一份 MinIO 对�
 
 ## v3 file / attachment（source-only，未验证）
 
-> 以下命令存在于 `./scripts/ms.sh`（v3.x，README §16.1 俗称 v1）。**本环境无 v3 服务器可连**，v3-only 路径返回 404，故**全部为 `未验证 (source-only)`**，不得当作已验证行为。
+> 以下命令存在于 `./scripts/ms.sh`（对接 v3.x；README §16.1——旧称「v1」为误称，本仓库无 `v1` 目录、不存在 MeterSphere v1）。**本环境无 v3 服务器可连**，v3-only 路径返回 404，故**全部为 `未验证 (source-only)`**，不得当作已验证行为。
 
 ```bash
 ./scripts/ms.sh file upload <json> <local-file>       # 未验证 (source-only)

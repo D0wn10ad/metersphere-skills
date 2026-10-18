@@ -18,6 +18,7 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - ms.py 是独立 Python CLI（仅 list/get/create/raw），不被 ms.sh 调用；两者并存，勿假设功能一致。
 - 辅助脚本：ms_generate.py（本地草稿生成）、ms_batch.py（批量写入）、ms_review_summary.py（评审覆盖统计）、ms_case_report.py（结构化 JSON 报告）、ms_case_report_md.py（Markdown 报告，包装 ms_case_report.py）。
 - v2 辅助脚本（skills/scripts/v2/）：ms_generate.py / ms_generate_case.py（草稿生成）、ms_import_helper.py（导入辅助）、ms_split_cases.py（测试用例文件拆分器：docx/pdf/xlsx/xmind → v2 字段契约 JSON 草稿；xlsx/docx/pdf 需可选富依赖，xmind 走 stdlib）。
+- **版本对应（防误解）**：无后缀 `skills/scripts/` 对接 MeterSphere **v3.x**；`skills/scripts/v2/` 对接 **v2.10 LTS**。「v1」是历史误称——仓库无 `v1` 目录、不存在 MeterSphere v1，凡见「v1」一律指根目录 v3.x 脚本（详见 README §16）。
 
 ## CLI 语法
 - 资源: organization, project, functional-module, functional-template, api-module, functional-case, functional-case-review, case-review, case-review-detail, case-review-module, case-review-user, api, api-case, comment, attachment, file
