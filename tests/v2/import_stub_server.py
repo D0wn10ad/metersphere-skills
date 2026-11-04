@@ -238,6 +238,9 @@ class StubHandler(BaseHTTPRequestHandler):
             with LOCK:
                 with open(self.state_path + ".import.raw", "wb") as fh:
                     fh.write(self._last_raw)
+                with open(self.state_path + ".import.headers", "w",
+                          encoding="utf-8") as fh:
+                    fh.write(self.headers.get("Accept-Language", ""))
             mode = fail_mode()
             if mode == "import_500":
                 self._send(500, {"success": False,
