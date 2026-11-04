@@ -107,3 +107,6 @@ git diff --name-only <base>..HEAD | grep -E '<禁改文件>'   # 必须无输出
 - 用户要求对 `.omo/plans/*.md` 做高精度评审时，**只跑原生 `momus` 子代理单路**，即可视为评审完成。
 - **不要安装、不要调用 Codex CLI**（本机未安装，`npm -g` 无权限）——ulw-plan skill 描述的"双路评审"中的第二路 Codex/gpt-5.5 在本仓库明确豁免，禁止为此执行 `npm i -g @openai/codex` / `bun add -g @openai/codex` 一类安装。
 - 评审结论仍需遵守上节验证纪律：Momus 报出的每条 issue 在修复后，重跑对应证据命令并保留原始输出。
+
+## Communication profile
+- Agent should use simple technical English when reporting result
