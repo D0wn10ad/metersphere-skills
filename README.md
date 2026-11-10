@@ -431,7 +431,7 @@ v2 的「项目文件库」文件可被多条用例共享（同一份 MinIO 对�
 - `generate` 本地生成 v2 草稿（`skills/scripts/v2/ms_generate.py`），不写入；`batch-create` 批量写入（JSON 数组文件）；`generate-create` 生成后直接批量写入，一步到位。
 - `batch-create --file-id <fileMetadataId>` 把项目文件库文件注入每条用例的 `relateFileMetaIds`（库文件零拷贝，详见下方「项目文件库」）。
 - `template` 下载 excel 导入模板（二进制 xlsx；`importType` 仅 `Create|Update`，默认 `Create`；省略 outfile 时输出到 stdout）。
-- `import` excel/xmind 导入（multipart 双 part `request`+`file`；`.xmind` 同端点，服务端按扩展名分发到 XmindCaseParser；request 体仅需 `{projectId, importType, ignore:false[, versionId]}`，userId 由服务端自行填充）。xlsx 非导入就绪时可用 `--fix-status <选项值>`（改写所有非空「用例状态」单元格，如 `Finished`）与 `--default-maintainer <成员>`（补填空「责任人」）——**在临时副本上规范化后上传副本，原文件绝不改动**（需 openpyxl；合并单元格只写锚点行）。xmind 不需要也不接受这两个参数：服务端自动填充责任人（=导入用户）与状态/等级（=模板默认值），不存在「Pass 非法/责任人必填」失败面。
+- `import` excel/xmind 导入（multipart 双 part `request`+`file`；`.xmind` 同端点，服务端按扩展名分发到 XmindCaseParser；request 体仅需 `{projectId, importType, ignore:false[, versionId]}`，userId 由服务端自行填充）。**表头语言规则**：服务端按请求 locale（`LocaleContextHolder`）选定唯一可接受的表头集——EN 模板表头（`Name/Module/Tag/...`）或 CN 模板表头（`用例名称/所属模块/...`），不匹配即报 `case_import_table_header_missing`。脚本对 xlsx **自动探测首行表头**并发送对应 `Accept-Language`（en-US/zh-CN/zh-TW），也可用 `--lang en|zh|tw` 显式指定；xmind 无表头概念不受影响。xlsx 非导入就绪时可用 `--fix-status <选项值>`（改写所有非空「用例状态」单元格，如 `Finished`）与 `--default-maintainer <成员>`（补填空「责任人」）——**在临时副本上规范化后上传副本，原文件绝不改动**（需 openpyxl；合并单元格只写锚点行）。xmind 不需要也不接受这些参数：服务端自动填充责任人（=导入用户）与状态/等级（=模板默认值），不存在「Pass 非法/责任人必填」失败面。
 - `relate-demand` 批量关联需求（需求管理为第三方平台集成，Phabricator 配置后可列出；body `{ids:[...], demandId, demandName}`；`demandId` 为 `other` 时必须提供 `--demand-name`）。
 - `split-create` 一键拆分写入（见下方「测试用例文件拆分写入」）。
 - `delete` 删除指定功能用例（POST /test/case/delete/{id}，服务端需 PROJECT_TRACK_CASE_READ_DELETE 权限）；用于清理误写入的用例。
@@ -470,7 +470,7 @@ python3 skills/scripts/v2/ms_split_cases.py <file> [--format auto|docx|pdf|xlsx|
 - `--tags <标签[,标签...]>`（**可选，可重复**）：给每条生成的用例写入 `tags` 标签（典型用途是 Phabricator 工单号），值内可用逗号或空格分隔多个标签，脚本归一化去重后序列化成 **JSON 编码的字符串**（v2.10 的 `tags` 是 String 字段而非数组，裸数组会丢标签）；等价的重复写法 `--tags T-story-123 --tags T-tech-456`。**缺省时载荷里完全不含 `tags` 键**（连 `"[]"` 都不发）。必须在位置参数之前或之后皆可——脚本先剥离 `--tags` 再解析位置参数。
 - **不创建定义**（定义由导入或插件负责）；不执行用例；不添加 JSONPath 断言（仅状态码断言）。
 - 覆盖说明：v2 将 query 参数存储在 `arguments` 字段（非 `query`），`skills/scripts/v2/ms_generate_case.py` 的变体扫描按 `query` > `rest` > `arguments` 的优先级依次覆盖三组参数（`PARAM_GROUPS = ('query', 'rest', 'arguments')`，`arguments` 条目与 `query` 同构故一并扫描）。因此**只有 body、三个参数组都没有必填或字符串参数**的定义才会只生成 `*成功场景`，缺少必填缺失与边界覆盖，这类定义需交给 AI 增强步骤补偿。
-- 参数组命名对照（易混淆点）：`v1` 指 `skills/scripts/`（对接 MeterSphere v3.x），`v2` 指 `skills/scripts/v2/`（对接 MeterSphere v2.10 LTS），并非 MeterSphere 产品版本号。详见 §16。
+- 参数组命名对照（易混淆点）：无后缀 `skills/scripts/` 对接 **MeterSphere v3.x**，`skills/scripts/v2/` 对接 **MeterSphere v2.10 LTS**。历史称谓「v1」是误称——本仓库没有 `v1` 目录，也不存在 MeterSphere v1；凡见「v1」一律指根目录的 v3.x 脚本。详见 §16。
 - 失败不中断：单条创建失败继续其余，汇总报告；仅当 0 条创建成功时退出非零。
 
 #### AI 对话记录（chat-history flow）
@@ -734,23 +734,25 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 
 ---
 
-## 16. 两套脚本的版本对应关系（v1 / v2 命名的真实含义）
+## 16. 两套脚本的版本对应关系（根目录 = v3、`v2/` = v2；「v1」是误称）
 
-本仓库有两套脚本入口，目录名 `v1` / `v2` 指的是**脚本的版本**，而**不是** MeterSphere 的产品版本。这一点极易误解，下表为源码实测结论。
+本仓库有两套脚本入口，**以目录对应 MeterSphere 产品版本**：无后缀的 `skills/scripts/` 对接 **MeterSphere v3.x**，`skills/scripts/v2/` 对接 **MeterSphere v2.10 LTS**。
 
-| 脚本位置 | 通常被称作 | 实际对接的 MeterSphere 版本 |
+> ⚠️ **命名更正（防误解）**：早期文档与对话把根目录脚本称作「v1」——这是**误称**。本仓库**没有 `v1` 目录，也不存在 MeterSphere v1 产品版本**；凡见「v1」字样（含本节历史表述与 SKILL.md 旧注），一律按「对接 MeterSphere v3.x 的根目录脚本」理解。
+
+| 脚本位置 | 旧称（误） | 实际对接的 MeterSphere 版本 |
 | --- | --- | --- |
-| `skills/scripts/` | v1 | **MeterSphere v3.x** |
+| `skills/scripts/`（无后缀） | ~~v1~~ | **MeterSphere v3.x** |
 | `skills/scripts/v2/` | v2 | **MeterSphere v2.10 LTS** |
 
-### 16.1 `skills/scripts/`（俗称 v1）→ MeterSphere v3.x
+### 16.1 `skills/scripts/`（旧称「v1」，误）→ MeterSphere v3.x
 
 依据（均可在 MeterSphere 源码树核对）：
 
 - 校验点：本地 MeterSphere 检出 `cf7a649a71` 与 `origin/v3.x`、tag `v3.6.9-lts` 指向同一提交。
-- v1 使用的路径在该树上均存在：`/api/case/add`、`/functional/case/add`、`/system/version/current`。
-- `ApiTestCaseService.addCase()` 内 `testCase.setId(IDGenerator.nextStr())`——**由 v3.x 服务端自行生成用例 ID**，因此 v1 写入时无需客户端指定 ID。
-- v1 新增的 `file` / `attachment` 资源（`file upload|page|delete`、`attachment upload|relate|page|delete`）路径来自 v3.x 源码 `FileManagementController` / `FunctionalCaseAttachmentController`（`/project/file/*`、`/attachment/*`），但**本环境无 v3 服务器可连，全部 `未验证 (source-only)`**（`skills/scripts/ms.sh` 内 `未验证` 计数 19）。
+- 根目录脚本（旧称「v1」）使用的路径在该树上均存在：`/api/case/add`、`/functional/case/add`、`/system/version/current`。
+- `ApiTestCaseService.addCase()` 内 `testCase.setId(IDGenerator.nextStr())`——**由 v3.x 服务端自行生成用例 ID**，因此根目录脚本写入时无需客户端指定 ID。
+- 根目录脚本新增的 `file` / `attachment` 资源（`file upload|page|delete`、`attachment upload|relate|page|delete`）路径来自 v3.x 源码 `FileManagementController` / `FunctionalCaseAttachmentController`（`/project/file/*`、`/attachment/*`），但**本环境无 v3 服务器可连，全部 `未验证 (source-only)`**（`skills/scripts/ms.sh` 内 `未验证` 计数 19）。
 
 ### 16.2 `skills/scripts/v2/` → MeterSphere v2.10 LTS
 
@@ -758,7 +760,7 @@ python3 skills/scripts/v2/ms_chat_log.py <conversation-json-file> [--creator <la
 
 - 校验点：真实 tag `v2.10.26-lts`（提交 `b2d3d1d09ac119d6c03d7b767e33fd449665ced5`）的 `ApiTestCaseController.java:36` 为 `@RequestMapping(value = "/api/testcase")`，`:120` 为 `@PostMapping(value = "/create", consumes = {"multipart/form-data"})`。
 - 该路径与 `skills/scripts/v2/ms.sh:49` 的 `METERSPHERE_API_CASE_CREATE_PATH='/api/testcase/create'` 完全一致。
-- 服务端**不生成**用例 ID，故 v2 侧每条用例必须显式携带 `id`（uuid4）——这是 v2 与 v1 最容易踩的差异之一。
+- 服务端**不生成**用例 ID，故 v2 侧每条用例必须显式携带 `id`（uuid4）——这是 v2 与 v3（根目录脚本）最容易踩的差异之一。
 - v2 的 query 参数存放在 `arguments` 字段而非 `query`（参数组扫描差异见 §8.6 覆盖说明）。
 
 ### 16.3 两条产品线源码布局不同

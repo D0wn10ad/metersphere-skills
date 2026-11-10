@@ -18,6 +18,7 @@ metersphere-skills 是一个可分发、可安装的 Agent Skill 包：用本地
 - ms.py 是独立 Python CLI（仅 list/get/create/raw），不被 ms.sh 调用；两者并存，勿假设功能一致。
 - 辅助脚本：ms_generate.py（本地草稿生成）、ms_batch.py（批量写入）、ms_review_summary.py（评审覆盖统计）、ms_case_report.py（结构化 JSON 报告）、ms_case_report_md.py（Markdown 报告，包装 ms_case_report.py）。
 - v2 辅助脚本（skills/scripts/v2/）：ms_generate.py / ms_generate_case.py（草稿生成）、ms_import_helper.py（导入辅助）、ms_split_cases.py（测试用例文件拆分器：docx/pdf/xlsx/xmind → v2 字段契约 JSON 草稿；xlsx/docx/pdf 需可选富依赖，xmind 走 stdlib）。
+- **版本对应（防误解）**：无后缀 `skills/scripts/` 对接 MeterSphere **v3.x**；`skills/scripts/v2/` 对接 **v2.10 LTS**。「v1」是历史误称——仓库无 `v1` 目录、不存在 MeterSphere v1，凡见「v1」一律指根目录 v3.x 脚本（详见 README §16）。
 
 ## CLI 语法
 - 资源: organization, project, functional-module, functional-template, api-module, functional-case, functional-case-review, case-review, case-review-detail, case-review-module, case-review-user, api, api-case, comment, attachment, file
@@ -106,3 +107,6 @@ git diff --name-only <base>..HEAD | grep -E '<禁改文件>'   # 必须无输出
 - 用户要求对 `.omo/plans/*.md` 做高精度评审时，**只跑原生 `momus` 子代理单路**，即可视为评审完成。
 - **不要安装、不要调用 Codex CLI**（本机未安装，`npm -g` 无权限）——ulw-plan skill 描述的"双路评审"中的第二路 Codex/gpt-5.5 在本仓库明确豁免，禁止为此执行 `npm i -g @openai/codex` / `bun add -g @openai/codex` 一类安装。
 - 评审结论仍需遵守上节验证纪律：Momus 报出的每条 issue 在修复后，重跑对应证据命令并保留原始输出。
+
+## Communication profile
+- Agent should use simple technical English when reporting result
