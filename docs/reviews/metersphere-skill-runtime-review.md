@@ -74,7 +74,7 @@ After `functional-case import` succeeded ("import 完成: 新增 12 条"), the a
 
 ---
 
-## Recommendations
+## Recommendations R1-R6
 
 Each recommendation is grounded in the actual mechanism with line citations. Fork resolutions below are DECIDED and not open for re-litigation.
 
@@ -105,6 +105,8 @@ e.g. "补齐无用例的接口" → `api-case gap <projectId>`; "从 Swagger/Ope
 
 **R6. Cross-skill seam — make `doc-based-testcase-generator` emit a metersphere-v2 excel-ready xlsx (DEFERRED).**
 Deferred, out of scope for this single deliverable. Chain would become PRD → generator → xlsx → `functional-case import` with zero runtime format stitching. Grounding: no such emitter exists today.
+
+### Recommendations-R7-R12
 
 **R7. Scripted version-id resolution — `skills/scripts/v2/ms.sh functional-case version <projectId>` (primary).**
 Returns the project's version list (id + name) so the agent stops path-guessing. Resolve against a functional-case module tree, so it belongs on the `functional-case` resource. Edge cases: zero versions → empty list + exit 2 with a clear "no versions" message; multiple versions → return all (id + name), default to the first if no preference is given. The new command must REPLACE the hardcoded mapping at `skills/SKILL.md:304` (`1163437937827840 → versionId 1163437937827887`); that fallback stays only behind `METERSPHERE_DEFAULT_VERSION_ID`, never as the primary path. Grounding: no version command exists (grep = 0 matches); transcript path-guessing (Finding G).
